@@ -126,6 +126,11 @@ public class Engine {
                     "org.example.agents.FacilitatorAgent",
                     null
             );
+            AgentController apiGatewayAgent = container.createNewAgent(
+                    "api-gateway-agent",
+                    "org.example.agents.ApiGatewayAgent",
+                    new Object[]{8080}
+            );
 
             annaAgent.start();
             janAgent.start();
@@ -135,6 +140,7 @@ public class Engine {
             resourceAgent.start();
             healthAgent.start();
             socialSupportAgent.start();
+            apiGatewayAgent.start();
             scenarioAgent.start();
             facilitatorAgent.start();
 
