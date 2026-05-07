@@ -48,41 +48,10 @@ Business rules:
 - Prefer activities matching resident preferences from the provided context.
 - Prefer safe activities for residents who are willingToParticipate.
 - Mobility rule: LOW activity is safest and can be joined by everyone; MEDIUM requires at least MEDIUM; HIGH requires HIGH.
-- Avoid WALKING if target residents have walking limitations.
-- Avoid FITNESS if target residents mention exercise, fitness, heart, or fatigue limitations.
-- Avoid noisy activities MUSIC, MOVIE, and BINGO if target residents have noise sensitivity.
-- maxParticipants must be between 4 and 30.
 - Use an id that does not duplicate existingActivities.
 - Prefer ids like LC-ACT-001, LC-ACT-002, LC-ACT-003, etc.
 - The explanation must be maximum two sentences.
 """.strip()
-def _mobility_rank(level:MobilityLevel) ->int:
-    return{MobilityLevel.LOW: 1, MobilityLevel.MEDIUM: 2, MobilityLevel.HIGH: 3,}[level]
-def _parse_mobility_level(value:Any)->MobilityLevel|None:
-    if value is None:
-        return None
-    try:
-        return MobilityLevel(str(value).upper())
-    except ValueError:
-        return None
-def _extract_existing_activity_ids(context: Dict[str,Any])->set[str]:
-    existing_activities = context.get("existingActivities", [])
-    ids:set[str] = set()
-    if not isinstance(existing_activities, list):
-        return ids
-    for activity in existing_activities:
-        if isinstance(activity,dict):
-            activity_id = activity.get("id")
-            if activity_id:
-                ids.add(str(activity_id))
-    return ids
-def _get_resident_mobility_level(resident: Dict[str, Any]) -> MobilityLevel | None:
-    health_profile = resident.get("healthProfile", {})
-
-    if not isinstance(health_profile, dict):
-        return None
-
-    return _parse_mobility_level(health_profile.get("mobilityLevel"))
 def _validate_against_request(
     activity_message: ActivityProposalMessage,
     request: GenerateActivityRequest,
