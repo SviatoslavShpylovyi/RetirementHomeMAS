@@ -48,7 +48,6 @@ Business rules:
 - Prefer activities matching resident preferences from the provided context.
 - Prefer safe activities for residents who are willingToParticipate.
 - Mobility rule: LOW activity is safest and can be joined by everyone; MEDIUM requires at least MEDIUM; HIGH requires HIGH.
-- Use an id that does not duplicate existingActivities.
 - Prefer ids like LC-ACT-001, LC-ACT-002, LC-ACT-003, etc.
 - The explanation must be maximum two sentences.
 """.strip()
@@ -62,7 +61,7 @@ def _validate_against_request(
         raise ValueError("Generated activity type does not match preferredEvents")
 
     if request.preferredMobility and activity.requiredMobilityLevel not in request.preferredMobility:
-        raise ValueError("Generated mobility level does not match preferredMobility")
+        raise ValueError("Generated mobility level does not match preferredMobility " + activity.requiredMobilityLevel)
 
     if request.preferredNumOfParticipants:
         values = request.preferredNumOfParticipants
