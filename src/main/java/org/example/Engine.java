@@ -15,6 +15,10 @@ import jade.core.Runtime;
 import jade.wrapper.AgentController;
 import jade.wrapper.ContainerController;
 import jade.wrapper.StaleProxyException;
+import org.example.model.ActivityType;
+import org.example.model.HealthProfile;
+import org.example.model.MobilityLevel;
+import org.example.model.Resident;
 
 
 import java.util.List;
@@ -27,51 +31,117 @@ public class Engine {
 
     public static void main(String[] args) {
         try {
-            final Runtime runtime = Runtime.instance();
-            final Profile profile = new ProfileImpl();
+            System.out.println("Starting retirement home MAS demo...");
 
-            final ContainerController container =
-                    jadeExecutor.submit(() -> runtime.createMainContainer(profile)).get();
+            Runtime runtime = Runtime.instance();
 
-            runGUI(container);
+            Profile profile = new ProfileImpl();
+            profile.setParameter(Profile.GUI, "true");
 
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new AgentContainerException("MainContainer", e);
-        } catch (ExecutionException e) {
-            throw new AgentContainerException("MainContainer", e);
-        }
+            jade.wrapper.AgentContainer container = runtime.createMainContainer(profile);
 
-    }
+            Resident anna = new Resident(
+                    true,
+                    new HealthProfile(
+                            MobilityLevel.LOW,
+                            List.of("Avoid long walking")
+                    ),
+                    List.of(ActivityType.MUSIC, ActivityType.SOCIAL_TEA, ActivityType.BINGO),
+                    "R1",
+                    "Anna"
+            );
 
-    public static void runGUI(final ContainerController mainContainer) {
-        try {
-            final AgentController guiAgent = mainContainer.createNewAgent("rma", "jade.tools.rma.rma", new Object[0]);
-            guiAgent.start();
-        } catch (final StaleProxyException e) {
-            throw new AgentContainerException("GUIAgent", e);
-        }
-    }
+            Resident jan = new Resident(
+                    true,
+                    new HealthProfile(
+                            MobilityLevel.MEDIUM,
+                            List.of()
+                    ),
+                    List.of(ActivityType.BOARD_GAMES, ActivityType.POKER, ActivityType.READING),
+                    "R2",
+                    "Jan"
+            );
 
-    public static void runAgent(final ContainerController mainContainer, final String agentName,
-                                final String className, final String packageName) {
-        try {
-            final String path = format("org.example.%s.agents.%s", packageName, className);
-            final AgentController agent = mainContainer.createNewAgent(agentName, path, new Object[] {});
-            agent.start();
-        } catch (final StaleProxyException e) {
-            throw new AgentContainerException(agentName, e);
-        }
-    }
+            Resident maria = new Resident(
+                    false,
+                    new HealthProfile(
+                            MobilityLevel.HIGH,
+                            List.of("Sensitive to noise")
+                    ),
+                    List.of(ActivityType.ART, ActivityType.KNITTING, ActivityType.MOVIE),
+                    "R3",
+                    "Maria"
+            );
 
-    public static void runAgent(final ContainerController mainContainer, final String agentName,
-                                final String className, final String packageName, final Object[] args) {
-        try {
-            final String path = format("org.example.%s.agents.%s", packageName, className);
-            final AgentController agent = mainContainer.createNewAgent(agentName, path, args);
-            agent.start();
-        } catch (final StaleProxyException e) {
-            throw new AgentContainerException(agentName, e);
+            AgentController annaAgent = container.createNewAgent(
+                    "resident-anna",
+                    "org.example.agents.ResidentAgent",
+                    new Object[]{anna}
+            );
+
+            AgentController janAgent = container.createNewAgent(
+                    "resident-jan",
+                    "org.example.agents.ResidentAgent",
+                    new Object[]{jan}
+            );
+
+            AgentController mariaAgent = container.createNewAgent(
+                    "resident-maria",
+                    "org.example.agents.ResidentAgent",
+                    new Object[]{maria}
+            );
+
+            AgentController activityAgent = container.createNewAgent(
+                    "activity-agent",
+                    "org.example.agents.ActivityAgent",
+                    null
+            );
+
+            AgentController resourceAgent = container.createNewAgent(
+                    "resource-agent",
+                    "org.example.agents.ResourceAgent",
+                    null
+            );
+
+            AgentController healthAgent = container.createNewAgent(
+                    "health-agent",
+                    "org.example.agents.HealthAgent",
+                    null
+            );
+
+            AgentController socialSupportAgent = container.createNewAgent(
+                    "social-support-agent",
+                    "org.example.agents.SocialSupportAgent",
+                    null
+            );
+
+            AgentController scenarioAgent = container.createNewAgent(
+                    "scenario-agent",
+                    "org.example.agents.ScenarioAgent",
+                    null
+            );
+
+            AgentController facilitatorAgent = container.createNewAgent(
+                    "facilitator-agent",
+                    "org.example.agents.FacilitatorAgent",
+                    null
+            );
+
+            annaAgent.start();
+            janAgent.start();
+            mariaAgent.start();
+
+            activityAgent.start();
+            resourceAgent.start();
+            healthAgent.start();
+            socialSupportAgent.start();
+            scenarioAgent.start();
+            facilitatorAgent.start();
+
+            System.out.println("Demo agents started successfully.");
+
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
