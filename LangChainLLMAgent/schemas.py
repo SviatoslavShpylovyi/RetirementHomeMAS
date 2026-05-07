@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import datetime
 from enum import Enum
-from typing import  List, Literal
+from typing import  List, Literal,Dict,Any
 from pydantic import BaseModel, Field, field_validator, model_validator 
 
 MAXPARTICIPANTS = 30
@@ -70,4 +70,22 @@ class ActivityProposalMessage(BaseModel):
     )
     explanation: str = Field(
         description="Brief 2 sentence max expanation of why this activity was generated"
+    )
+class GenerateActivityRequest(BaseModel):
+    preferredEvents: list[ActivityType] = Field(
+        default_factory=list,
+        description="Preferred activity types. Empty list means no restriction."
+    )
+
+    preferredNumOfParticipants: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Preferred participant numbers. Empty list means no restriction. "
+            "If two numbers are provided, they are interpreted as min and max."
+        )
+    )
+
+    preferredMobility: list[MobilityLevel] = Field(
+        default_factory=list,
+        description="Preferred required mobility levels. Empty list means no restriction."
     )
