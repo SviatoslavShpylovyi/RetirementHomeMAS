@@ -1,10 +1,15 @@
 package org.example.agents;
 
 import jade.core.Agent;
+import jade.core.behaviours.CyclicBehaviour;
 import jade.core.behaviours.OneShotBehaviour;
 import org.example.model.*;
 
 import java.util.*;
+
+import jade.lang.acl.ACLMessage;
+import jade.lang.acl.MessageTemplate;
+import java.time.LocalDateTime;
 
 public class ResourceAgent extends Agent {
 
@@ -14,6 +19,7 @@ public class ResourceAgent extends Agent {
     private List<Resource> resources;
     private Map<String, List<ResourceBooking>> resourceBookings;
 
+    private static final String RESOURCE_BOOKING_CONVERSATION = "resource-booking";
 
     @Override
     protected void setup() {
@@ -25,18 +31,118 @@ public class ResourceAgent extends Agent {
         resources = new ArrayList<>();
         resourceBookings = new HashMap<>();
 
-        addBehaviour(new OneShotBehaviour() {
+        initializeRooms();
+        initializeResources();
+
+        addResourceRequestReceiver();
+
+        printRooms();
+        printResources();
+        printRoomBookings();
+        printResourceBookings();
+
+
+    }
+
+    // communication with ActivityAgent
+    private void addResourceRequestReceiver(){
+        addBehaviour(new CyclicBehaviour() {
             @Override
             public void action() {
-                initializeRooms();
-                initializeResources();
+                MessageTemplate template = MessageTemplate.and(
+                        MessageTemplate.MatchConversationId(RESOURCE_BOOKING_CONVERSATION),
+                        MessageTemplate.MatchPerformative(ACLMessage.REQUEST)
+                );
 
-                printRooms();
-                printResources();
-                printRoomBookings();
-                printResourceBookings();
+                ACLMessage message = myAgent.receive(template);
+
+                if(message == null){
+                    block();
+                }else{
+                    handleResourceRequest(message);
+                }
+
             }
         });
+    }
+
+    private void handleResourceRequest(ACLMessage message){
+        String content = message.getContent();
+
+        System.out.println(getLocalName() + " <- " + message.getSender().getLocalName() + ": booking request: " + content);
+
+        String replyContent;
+
+        try{
+            String[] parts = content.split("\\|");
+
+            if (parts.length < 6) {
+                replyContent = "UNKNOWN|REJECTED|Wrong message format";
+            } else{
+                String proposalId = parts[0];
+                String roomId = parts[1];
+                int participantCount = Integer.parseInt(parts[2]);
+
+                LocalDateTime startTime = LocalDateTime.parse(parts[3]);
+                LocalDateTime endTime = LocalDateTime.parse(parts[4]);
+                TimeSlot timeSlot = new TimeSlot(startTime, endTime);
+
+                Map<String, Integer> requiredResources = parseRequiredResources(parts[5]);
+
+                boolean canBook = isRoomAvailable(roomId, timeSlot) && hasEnoughRoomCapacity(roomId, participantCount) && areResourcesAvailable(requiredResources, timeSlot);
+
+                if(canBook){
+                    bookRoom(roomId, timeSlot);
+                    bookResources(requiredResources,timeSlot);
+
+                    replyContent = proposalId + "|ACCEPTED";
+
+                    System.out.println("ResourceAgent accepted proposal " + proposalId);
+                    printRoomBookings();
+                    printResourceBookings();
+                }else{
+                    replyContent = proposalId + "|REJECTED|Room or resources not available";
+
+                    System.out.println("ResourceAgent rejected proposal " + proposalId);
+                }
+
+            }
+
+        } catch (Exception e) {
+            replyContent = "UNKNOWN|REJECTED|Invalid booking request";
+        }
+
+        ACLMessage reply = message.createReply();
+        reply.setPerformative(ACLMessage.INFORM);
+        reply.setConversationId(RESOURCE_BOOKING_CONVERSATION);
+        reply.setContent(replyContent);
+
+        send(reply);
+
+    }
+
+    private Map<String,Integer> parseRequiredResources(String resourcesPart){
+        Map<String, Integer> requiredResources = new HashMap<>();
+
+        if (resourcesPart == null || resourcesPart.isBlank() || resourcesPart.equals("-")) {
+            return requiredResources;
+        }
+
+        String[] resources = resourcesPart.split(",");
+
+        for (String resource : resources) {
+            String[] parts = resource.split(":");
+
+            if (parts.length == 2) {
+                String resourceId = parts[0];
+                int quantity = Integer.parseInt(parts[1]);
+
+                requiredResources.put(resourceId, quantity);
+            }
+        }
+        return requiredResources;
+
+
     }
 
     private void initializeRooms() {
