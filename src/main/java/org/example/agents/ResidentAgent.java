@@ -7,15 +7,20 @@ import org.example.model.ActivityType;
 import org.example.model.Resident;
 import org.example.model.TimeSlot;
 
-import java.sql.Time;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+
+import jade.core.AID;
+import jade.lang.acl.ACLMessage;
+import org.example.model.HealthProfile;
 
 public class ResidentAgent extends Agent {
     private Resident resident;
     private List<TimeSlot> availableTimeSlots;
 
+    private static final String HEALTH_AGENT_NAME = "health-agent";
+    private static final String RESIDENT_HEALTH_CONVERSATION = "resident-health-info";
 
     @Override
     protected void setup(){
@@ -41,10 +46,78 @@ public class ResidentAgent extends Agent {
                 }
 
                 printResidentData();
+                sendAddResidentHealthInfo();
 
             }
         });
 
+    }
+
+    //communication with HealthAgent
+    private void sendResidentHealthInfo(String action){
+        ACLMessage message = new ACLMessage(ACLMessage.INFORM);
+
+        message.addReceiver(new AID(HEALTH_AGENT_NAME, AID.ISLOCALNAME));
+        message.setConversationId(RESIDENT_HEALTH_CONVERSATION);
+        message.setContent(buildResidentHealthInfoMessage(action));
+
+        send(message);
+
+
+        System.out.println(getLocalName() + " -> " + HEALTH_AGENT_NAME  + ": " + action + " health info for resident " + resident.getId());
+    }
+
+    private void sendAddResidentHealthInfo(){
+        sendResidentHealthInfo("ADD");
+    }
+
+    private void sendUpdateResidentHealthInfo(){
+        sendResidentHealthInfo("UPDATE");
+    }
+
+    private String buildResidentHealthInfoMessage(String action){
+
+        HealthProfile healthProfile = resident.getHealthProfile();
+
+        return action
+                + "|" + resident.getId()
+                + "|" + resident.getName()
+                + "|" + resident.isWillingToParticipate()
+                + "|" + healthProfile.getMobilityLevel()
+                + "|" + buildLimitationsPart();
+    }
+
+    private String buildLimitationsPart(){
+        List<String> limitations = resident.getHealthProfile().getLimitations();
+
+        if (limitations == null || limitations.isEmpty()) {
+            return "-";
+        }
+
+        StringBuilder builder = new StringBuilder();
+
+        for (String limitation : limitations) {
+            if (builder.length() > 0) {
+                builder.append(";");
+            }
+
+            builder.append(limitation);
+        }
+
+        return builder.toString();
+    }
+
+    private void sendRemoveResidentHealthInfo(){
+        ACLMessage message = new ACLMessage(ACLMessage.INFORM);
+
+        message.addReceiver(new AID(HEALTH_AGENT_NAME, AID.ISLOCALNAME));
+        message.setConversationId(RESIDENT_HEALTH_CONVERSATION);
+        message.setContent("REMOVE|" + resident.getId());
+
+        send(message);
+
+        System.out.println(getLocalName() + " -> " + HEALTH_AGENT_NAME
+                + ": remove health info for resident " + resident.getId());
     }
 
 
@@ -99,6 +172,31 @@ public class ResidentAgent extends Agent {
             }
         }
         return false;
+    }
+
+    public void updateHealthProfile(HealthProfile newHealthProfile){
+        if (newHealthProfile == null) {
+            System.out.println("Cannot update health profile to null.");
+            return;
+        }
+
+        resident.setHealthProfile(newHealthProfile);
+
+        System.out.println(getLocalName() + ": health profile updated for resident "
+                + resident.getId());
+
+        sendUpdateResidentHealthInfo();
+    }
+
+
+
+    @Override
+    protected void takeDown(){
+        if (resident != null) {
+            sendRemoveResidentHealthInfo();
+        }
+
+        System.out.println(getLocalName() + " stopped.");
     }
 
 }

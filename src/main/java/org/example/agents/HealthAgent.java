@@ -1,7 +1,6 @@
 package org.example.agents;
 
 import jade.core.Agent;
-import jade.core.behaviours.OneShotBehaviour;
 import org.example.model.*;
 
 import java.util.ArrayList;
@@ -9,14 +8,276 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import jade.lang.acl.ACLMessage;
+import jade.lang.acl.MessageTemplate;
+import jade.core.behaviours.CyclicBehaviour;
+
+
 public class HealthAgent extends Agent {
+
+    private static final String HEALTH_CHECK_CONVERSATION = "health-check";
+    private static final String RESIDENT_HEALTH_CONVERSATION = "resident-health-info";
+
+    private List<Resident> residents;
 
     @Override
     protected void setup() {
         System.out.println(getLocalName() + " started.");
 
+        residents = new ArrayList<>();
+
+        addResidentHealthInfoReceiver();
+        addHealthQuestionReceiver();
 
     }
+
+    //communication with ResidentAgent
+    private void addResidentHealthInfoReceiver(){
+        addBehaviour(new CyclicBehaviour() {
+            @Override
+            public void action() {
+                MessageTemplate template = MessageTemplate.and(
+                        MessageTemplate.MatchConversationId(RESIDENT_HEALTH_CONVERSATION),
+                        MessageTemplate.MatchPerformative(ACLMessage.INFORM)
+                );
+
+                ACLMessage message = myAgent.receive(template);
+
+                if (message == null) {
+                    block();
+                } else {
+                    handleResidentHealthInfo(message.getContent());
+                }
+            }
+        });
+    }
+
+    private void handleResidentHealthInfo(String content){
+        if (content == null || content.isBlank()) {
+            return;
+        }
+
+        System.out.println(getLocalName() + " received resident health info: " + content);
+
+        String[] parts = content.split("\\|", -1);
+
+        if (parts.length < 2) {
+            System.out.println("Wrong resident health message format.");
+            return;
+        }
+
+        String action = parts[0];
+
+        if (action.equals("ADD")) {
+            addResidentHealthInfo(parts);
+        } else if (action.equals("UPDATE")) {
+            updateResidentHealthInfo(parts);
+        } else if (action.equals("REMOVE")) {
+            removeResidentHealthInfo(parts[1]);
+        } else {
+            System.out.println("Unknown resident health action: " + action);
+        }
+
+    }
+
+    private void addResidentHealthInfo(String[] parts){
+
+        if (parts.length != 6) {
+            System.out.println("Wrong ADD resident health message format.");
+            return;
+        }
+
+        Resident newResidentData = buildResidentFromMessage(parts);
+
+        if (findResidentById(newResidentData.getId()) != null) {
+            System.out.println(getLocalName() + ": resident " + newResidentData.getId()   + " already exists, ADD ignored.");
+
+        }else{
+            residents.add(newResidentData);
+
+            System.out.println(getLocalName() + ": added health info for resident "  + newResidentData.getId());
+
+            printKnownResidents();
+        }
+    }
+
+    private void updateResidentHealthInfo(String[] parts){
+        if (parts.length != 6) {
+            System.out.println("Wrong UPDATE resident health message format.");
+            return;
+        }
+
+        Resident updatedResidentData = buildResidentFromMessage(parts);
+
+        for (int i = 0; i < residents.size(); i++) {
+            if (residents.get(i).getId().equals(updatedResidentData.getId())) {
+                residents.set(i, updatedResidentData);
+
+                System.out.println(getLocalName() + ": updated health info for resident "
+                        + updatedResidentData.getId());
+
+                printKnownResidents();
+                return;
+            }
+        }
+
+        System.out.println(getLocalName() + ": cannot update resident " + updatedResidentData.getId() + " because no health info exists yet.");
+    }
+
+    private Resident buildResidentFromMessage(String[] parts){
+        String residentId = parts[1];
+        String name = parts[2];
+        boolean willingToParticipate = Boolean.parseBoolean(parts[3]);
+        MobilityLevel mobilityLevel = MobilityLevel.valueOf(parts[4]);
+        List<String> limitations = parseLimitations(parts[5]);
+
+        return new Resident(
+                willingToParticipate,
+                new HealthProfile(mobilityLevel, limitations),
+                new ArrayList<>(),
+                residentId,
+                name
+        );
+    }
+
+    private void removeResidentHealthInfo(String residentId){
+        boolean removed = residents.removeIf(resident -> resident.getId().equals(residentId));
+
+        if (removed) {
+            System.out.println(getLocalName() + ": removed health info for resident " + residentId);
+        } else {
+            System.out.println(getLocalName() + ": no health info found for resident " + residentId);
+        }
+
+        printKnownResidents();
+    }
+
+    private List<String> parseLimitations(String limitationsPart){
+        List<String> limitations = new ArrayList<>();
+
+        if (limitationsPart == null || limitationsPart.isBlank() || limitationsPart.equals("-")) {
+            return limitations;
+        }
+
+        String[] parts = limitationsPart.split(";");
+
+        for (String part : parts) {
+            if (!part.isBlank()) {
+                limitations.add(part);
+            }
+        }
+
+        return limitations;
+    }
+
+    private void printKnownResidents(){
+        System.out.println("\nHealth data known by " + getLocalName() + ":");
+
+        if (residents.isEmpty()) {
+            System.out.println(" - No residents.");
+            return;
+        }
+
+        for (Resident resident : residents) {
+            System.out.println(" - " + resident.getId()
+                    + ", mobility: " + resident.getHealthProfile().getMobilityLevel()
+                    + ", limitations: " + resident.getHealthProfile().getLimitations());
+        }
+    }
+
+    // communication with ActivityAgent
+    private void addHealthQuestionReceiver(){
+        addBehaviour(new CyclicBehaviour() {
+            @Override
+            public void action() {
+                MessageTemplate template = MessageTemplate.and(
+                        MessageTemplate.MatchConversationId(HEALTH_CHECK_CONVERSATION),
+                        MessageTemplate.MatchPerformative(ACLMessage.QUERY_IF)
+                );
+
+                ACLMessage message = myAgent.receive(template);
+
+                if(message == null){
+                    block();
+
+                }
+                else{
+                    handleHealthQuestion(message);
+
+                }
+            }
+        });
+    }
+
+    private void handleHealthQuestion(ACLMessage message){
+        String answerContent = checkProposalHealth(message.getContent());
+
+        ACLMessage reply = message.createReply();
+        reply.setPerformative(ACLMessage.INFORM);
+        reply.setConversationId(HEALTH_CHECK_CONVERSATION);
+        reply.setContent(answerContent);
+
+        send(reply);
+
+        System.out.println( getLocalName() + " -> " + message.getSender().getLocalName()   + ": " + answerContent);
+    }
+
+    private String checkProposalHealth(String content){
+        if(content == null || content.isBlank()){
+            return "UNKNOWN|ERROR";
+        }
+
+        String[] parts = content.split("\\|",-1);
+
+        if(parts.length != 6){
+            return "UNKNOWN|ERROR";
+        }
+
+        String proposalId = parts[0];
+        String activityId = parts[1];
+        ActivityType activityType = ActivityType.valueOf(parts[2]);
+        MobilityLevel requiredMobility = MobilityLevel.valueOf(parts[3]);
+        boolean roomAccessible = Boolean.parseBoolean(parts[4]);
+        String[] residentIds = parts[5].split(",");
+
+        Activity activity = new Activity(activityId,activityId,activityType,0,requiredMobility);
+
+        Room room = new Room("ROOM","Room",0,roomAccessible);
+        StringBuilder answer = new StringBuilder(proposalId);
+
+        for(String residentId: residentIds){
+            Resident resident = findResidentById(residentId);
+
+            if(resident==null){
+                answer.append("|").append(residentId).append(":UNSAFE");
+                System.out.println("No health data found for resident " + residentId);
+                continue;
+            }
+
+            HealthCheckResult result = validateResidentForActivity(resident,activity);
+            result.merge(validateResidentForRoom(resident,room));
+
+            System.out.println("Health check for " + residentId + ": " + result);
+
+            if(result.isSafe()){
+                answer.append("|").append(residentId).append(":SAFE");
+            }else{
+                answer.append("|").append(residentId).append(":UNSAFE");
+            }
+
+        }
+        return answer.toString();
+
+    }
+    private Resident findResidentById(String residentId){
+        for(Resident r: residents){
+            if(r.getId().equals(residentId)){
+                return r;
+            }
+        }
+        return null;
+    }
+
 
     public HealthCheckResult validateResidentForActivity(Resident resident, Activity activity) {
         HealthCheckResult result = new HealthCheckResult(true);

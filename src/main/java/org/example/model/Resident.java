@@ -39,6 +39,13 @@ public class Resident {
         return willingToParticipate;
     }
 
+    public void setHealthProfile(HealthProfile healthProfile) {
+        this.healthProfile = healthProfile;
+    }
+
+    public void setWillingToParticipate(boolean willingToParticipate) {
+        this.willingToParticipate = willingToParticipate;
+    }
 
     @Override
     public String toString() {
