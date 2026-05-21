@@ -7,4 +7,5 @@ public enum ParticipationStatus {
     CONFIRMED,
     DECLINED,
     CANCELLED,
+    HEALTH_APPROVED,
 }

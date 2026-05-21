@@ -9,7 +9,8 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-
+import java.util.HashMap;
+import java.util.stream.Collectors;
 import jade.core.AID;
 import jade.core.behaviours.CyclicBehaviour;
 import jade.lang.acl.ACLMessage;
@@ -34,17 +35,21 @@ public class ActivityAgent extends Agent {
     private static final String SCENARIO_TO_ACTIVITY_CONVERSATION = "scenario-event-proposal";
     private final ObjectMapper mapper = new ObjectMapper();
 
+    private static final String RESIDENT_INVITATION_CONVERSATION = "resident-activity-invitation";
+
+    private Map<String, Integer> pendingInvitationCounts;
+
     @Override
     protected void setup(){
         System.out.println(getLocalName() + " started.");
 
         activities = new ArrayList<>();
         eventProposals = new ArrayList<>();
-
+        pendingInvitationCounts = new HashMap<>();
         addHealthAnswerReceiver();
         addResourceAnswerReceiver();
         addScenarioProposalReceiver();
-
+        addResidentInvitationAnswerReceiver();
         addBehaviour(new OneShotBehaviour() {
             @Override
             public void action() {
@@ -84,7 +89,7 @@ public class ActivityAgent extends Agent {
 
         return proposal.getId()
                 + "|" + proposal.getRoom().getId()
-                + "|" + countActiveParticipants(proposal)
+                + "|" + countConfirmedParticipants(proposal)
                 + "|" + timeSlot.getStartTime()
                 + "|" + timeSlot.getEndTime()
                 + "|" + buildRequiredResourcesPart(proposal);
@@ -181,7 +186,12 @@ public class ActivityAgent extends Agent {
         Activity activity = proposal.getActivity();
         Room room = proposal.getRoom();
 
-        String residentIds = String.join(",",proposal.getParticipantStatuses().keySet());
+        String residentIds = proposal.getParticipantStatuses()
+                .entrySet()
+                .stream()
+                .filter(entry -> entry.getValue() == ParticipationStatus.SUGGESTED)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.joining(","));
 
         return proposal.getId() + "|" + activity.getId() + "|" + activity.getType() + "|" + activity.getRequiredMobilityLevel() + "|" + room.isAccessible() + "|" + residentIds;
     }
@@ -235,13 +245,30 @@ public class ActivityAgent extends Agent {
             String residentId = residentResult[0];
             String result = residentResult[1];
 
-            if (result.equals("UNSAFE")) {
-                updateParticipationStatus(proposalId, residentId, ParticipationStatus.DECLINED);
-
+            if("SAFE".equals(result)) {
+                updateParticipationStatus(
+                        proposalId,
+                        residentId,
+                        ParticipationStatus.HEALTH_APPROVED
+                );
+                System.out.println(
+                        "Resident " + residentId
+                                + " is safe for proposal " + proposalId
+                );
             } else {
-                System.out.println("Resident " + residentId + " is safe for proposal " + proposalId);
+                updateParticipationStatus(
+                        proposalId,
+                        residentId,
+                        ParticipationStatus.DECLINED
+                );
 
+                System.out.println(
+                        "Resident " + residentId
+                                + " is unsafe for proposal " + proposalId
+                                + ". Invitation will not be sent."
+                );
             }
+
 
         }
 
@@ -249,24 +276,35 @@ public class ActivityAgent extends Agent {
 
         if(optionalProposal.isEmpty()){
             System.out.println("Proposal not found: " + proposalId);
-        }else
-        {
-            EventProposal proposal = optionalProposal.get();
+            return;
+        }
+        EventProposal proposal = optionalProposal.get();
 
-            if(countActiveParticipants(proposal) == 0){
-                System.out.println("Proposal " + proposalId + " has no safe participants, so it will not be booked.");
-                cancelProposal(proposalId);
+        if (countHealthApprovedParticipants(proposal) == 0) {
+            System.out.println(
+                    "Proposal " + proposalId
+                            + " has no safe residents. Cancelling proposal."
+            );
 
-            }else{
-                askResourceAgentToBookProposal(proposal);
-            }
-
-
-            printEventProposals();
+            cancelProposal(proposalId);
+            return;
         }
 
+        inviteHealthApprovedResidents(proposal);
 
+        printEventProposals();
 
+    }
+    private int countHealthApprovedParticipants(EventProposal proposal) {
+        int count = 0;
+
+        for (ParticipationStatus status : proposal.getParticipantStatuses().values()) {
+            if (status == ParticipationStatus.HEALTH_APPROVED) {
+                count++;
+            }
+        }
+
+        return count;
     }
 
     private int countActiveParticipants(EventProposal proposal){
@@ -562,8 +600,188 @@ public class ActivityAgent extends Agent {
 
         return proposal;
     }
+    // communication with ResidentAgent
+    private void inviteHealthApprovedResidents(EventProposal proposal) {
+        List<String> safeResidentIds = proposal.getParticipantStatuses()
+                .entrySet()
+                .stream()
+                .filter(entry -> entry.getValue() == ParticipationStatus.HEALTH_APPROVED)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
 
+        if (safeResidentIds.isEmpty()) {
+            System.out.println(
+                    "Proposal " + proposal.getId()
+                            + " has no health-approved residents."
+            );
 
+            cancelProposal(proposal.getId());
+            return;
+        }
+
+        pendingInvitationCounts.put(proposal.getId(), safeResidentIds.size());
+
+        for (String residentId : safeResidentIds) {
+            sendInvitationToResident(proposal, residentId);
+            proposal.updateParticipationStatus(residentId, ParticipationStatus.INVITED);
+        }
+    }
+    private void sendInvitationToResident(EventProposal proposal, String residentId) {
+        String residentAgentName = residentId;
+
+        ACLMessage message = new ACLMessage(ACLMessage.REQUEST);
+
+        message.addReceiver(new AID(residentAgentName, AID.ISLOCALNAME));
+        message.setConversationId(RESIDENT_INVITATION_CONVERSATION);
+        message.setContent(buildResidentInvitationMessage(proposal, residentId));
+
+        send(message);
+
+        System.out.println(
+                getLocalName() + " -> " + residentAgentName
+                        + ": invitation for proposal " + proposal.getId()
+        );
+    }
+    private String buildResidentInvitationMessage(EventProposal proposal, String residentId) {
+        Activity activity = proposal.getActivity();
+        TimeSlot timeSlot = proposal.getTimeSlot();
+
+        return proposal.getId()
+                + "|" + residentId
+                + "|" + activity.getId()
+                + "|" + activity.getName()
+                + "|" + activity.getType()
+                + "|" + activity.getMaxParticipants()
+                + "|" + activity.getRequiredMobilityLevel()
+                + "|" + timeSlot.getStartTime()
+                + "|" + timeSlot.getEndTime();
+    }
+    private void addResidentInvitationAnswerReceiver() {
+        addBehaviour(new CyclicBehaviour() {
+            @Override
+            public void action() {
+                MessageTemplate template = MessageTemplate.and(
+                        MessageTemplate.MatchConversationId(RESIDENT_INVITATION_CONVERSATION),
+                        MessageTemplate.MatchPerformative(ACLMessage.INFORM)
+                );
+
+                ACLMessage message = myAgent.receive(template);
+
+                if (message == null) {
+                    block();
+                    return;
+                }
+
+                handleResidentInvitationAnswer(message.getContent());
+            }
+        });
+    }
+    private void handleResidentInvitationAnswer(String content) {
+        if (content == null || content.isBlank()) {
+            return;
+        }
+
+        System.out.println(getLocalName() + " <- resident: " + content);
+
+        String[] parts = content.split("\\|");
+
+        if (parts.length < 3) {
+            System.out.println("Wrong resident invitation answer format.");
+            return;
+        }
+
+        String proposalId = parts[0];
+        String residentId = parts[1];
+        String answer = parts[2];
+
+        Optional<EventProposal> optionalProposal = findProposalById(proposalId);
+
+        if (optionalProposal.isEmpty()) {
+            System.out.println("Proposal not found: " + proposalId);
+            return;
+        }
+
+        EventProposal proposal = optionalProposal.get();
+
+        if ("ACCEPTED".equals(answer)) {
+            proposal.updateParticipationStatus(residentId, ParticipationStatus.CONFIRMED);
+
+            System.out.println(
+                    "Resident " + residentId
+                            + " accepted proposal " + proposalId
+            );
+        } else {
+            proposal.updateParticipationStatus(residentId, ParticipationStatus.DECLINED);
+
+            String reason = "No reason given.";
+
+            if (parts.length >= 4) {
+                reason = parts[3];
+            }
+
+            System.out.println(
+                    "Resident " + residentId
+                            + " declined proposal " + proposalId
+                            + ": " + reason
+            );
+        }
+
+        decreasePendingInvitationCount(proposalId);
+        continueAfterAllResidentAnswers(proposalId);
+    }
+    private void decreasePendingInvitationCount(String proposalId) {
+        int currentCount = pendingInvitationCounts.getOrDefault(proposalId, 0);
+
+        if (currentCount > 0) {
+            pendingInvitationCounts.put(proposalId, currentCount - 1);
+        }
+    }
+    private void continueAfterAllResidentAnswers(String proposalId) {
+        int pendingCount = pendingInvitationCounts.getOrDefault(proposalId, 0);
+
+        if (pendingCount > 0) {
+            return;
+        }
+
+        pendingInvitationCounts.remove(proposalId);
+
+        Optional<EventProposal> optionalProposal = findProposalById(proposalId);
+
+        if (optionalProposal.isEmpty()) {
+            return;
+        }
+
+        EventProposal proposal = optionalProposal.get();
+
+        if (countConfirmedParticipants(proposal) == 0) {
+            System.out.println(
+                    "Proposal " + proposalId
+                            + " has no confirmed residents. Cancelling proposal."
+            );
+
+            cancelProposal(proposalId);
+            return;
+        }
+
+        System.out.println(
+                "All resident answers received for proposal "
+                        + proposalId
+                        + ". Starting resource booking."
+        );
+
+        askResourceAgentToBookProposal(proposal);
+    }
+    private int countConfirmedParticipants(EventProposal proposal) {
+        int count = 0;
+
+        for (ParticipationStatus status : proposal.getParticipantStatuses().values()) {
+            if (status == ParticipationStatus.CONFIRMED) {
+                count++;
+            }
+        }
+
+        return count;
+    }
 
 
 }

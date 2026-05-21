@@ -11,6 +11,10 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
+import jade.core.behaviours.CyclicBehaviour;
+import jade.lang.acl.MessageTemplate;
+import org.example.model.MobilityLevel;
+
 import jade.core.AID;
 import jade.lang.acl.ACLMessage;
 import org.example.model.HealthProfile;
@@ -21,7 +25,7 @@ public class ResidentAgent extends Agent {
 
     private static final String HEALTH_AGENT_NAME = "health-agent";
     private static final String RESIDENT_HEALTH_CONVERSATION = "resident-health-info";
-
+    private static final String RESIDENT_INVITATION_CONVERSATION = "resident-activity-invitation";
     @Override
     protected void setup(){
         System.out.println(getLocalName()+" started.");
@@ -37,6 +41,7 @@ public class ResidentAgent extends Agent {
             doDelete();
             return;
         }
+        addActivityInvitationReceiver();
 
         addBehaviour(new OneShotBehaviour() {
             @Override
@@ -47,6 +52,7 @@ public class ResidentAgent extends Agent {
 
                 printResidentData();
                 sendAddResidentHealthInfo();
+
 
             }
         });
@@ -197,6 +203,116 @@ public class ResidentAgent extends Agent {
         }
 
         System.out.println(getLocalName() + " stopped.");
+    }
+    //communication with the ActivityAgent
+    private void addActivityInvitationReceiver() {
+        addBehaviour(new CyclicBehaviour() {
+            @Override
+            public void action() {
+                MessageTemplate template = MessageTemplate.and(
+                        MessageTemplate.MatchConversationId(RESIDENT_INVITATION_CONVERSATION),
+                        MessageTemplate.MatchPerformative(ACLMessage.REQUEST)
+                );
+
+                ACLMessage message = myAgent.receive(template);
+
+                if (message == null) {
+                    block();
+                    return;
+                }
+
+                handleActivityInvitation(message);
+            }
+        });
+    }
+    private void handleActivityInvitation(ACLMessage message) {
+        String content = message.getContent();
+
+        System.out.println(
+                getLocalName() + " <- " + message.getSender().getLocalName()
+                        + ": activity invitation: " + content
+        );
+
+        String replyContent;
+
+        try {
+            replyContent = evaluateActivityInvitation(content);
+        } catch (Exception ex) {
+            String residentId = resident != null ? resident.getId() : "UNKNOWN";
+
+            replyContent = "UNKNOWN"
+                    + "|" + residentId
+                    + "|DECLINED|Invalid invitation format";
+
+            System.err.println(getLocalName() + " failed to process invitation:");
+            ex.printStackTrace();
+        }
+
+        ACLMessage reply = message.createReply();
+        reply.setPerformative(ACLMessage.INFORM);
+        reply.setConversationId(RESIDENT_INVITATION_CONVERSATION);
+        reply.setContent(replyContent);
+
+        send(reply);
+
+        System.out.println(
+                getLocalName() + " -> " + message.getSender().getLocalName()
+                        + ": invitation answer: " + replyContent
+        );
+    }
+
+    private String evaluateActivityInvitation(String content) {
+        String[] parts = content.split("\\|");
+
+        if (parts.length < 9) {
+            throw new IllegalArgumentException(
+                    "Wrong invitation format. Expected: proposalId|residentId|activityId|activityName|activityType|maxParticipants|requiredMobilityLevel|startTime|endTime"
+            );
+        }
+
+        String proposalId = parts[0];
+        String targetResidentId = parts[1];
+
+        ActivityType activityType = ActivityType.valueOf(parts[4]);
+
+        TimeSlot timeSlot = new TimeSlot(
+                LocalDateTime.parse(parts[7]),
+                LocalDateTime.parse(parts[8])
+        );
+
+        if (resident == null) {
+            return proposalId
+                    + "|UNKNOWN"
+                    + "|DECLINED|Resident data is not initialized";
+        }
+
+        if (!resident.getId().equals(targetResidentId)) {
+            return proposalId
+                    + "|" + resident.getId()
+                    + "|DECLINED|Invitation was sent to wrong resident";
+        }
+
+        if (!resident.isWillingToParticipate()) {
+            return proposalId
+                    + "|" + resident.getId()
+                    + "|DECLINED|Resident is not willing to participate";
+        }
+
+        if (!resident.getPreferences().contains(activityType)) {
+            return proposalId
+                    + "|" + resident.getId()
+                    + "|DECLINED|Resident is not interested in this activity";
+        }
+
+        if (!isAvailableAt(timeSlot)) {
+            return proposalId
+                    + "|" + resident.getId()
+                    + "|DECLINED|Resident is not available at this time";
+        }
+
+        return proposalId
+                + "|" + resident.getId()
+                + "|ACCEPTED|Resident accepts invitation";
     }
 
 }

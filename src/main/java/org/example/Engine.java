@@ -74,19 +74,19 @@ public class Engine {
             );
 
             AgentController annaAgent = container.createNewAgent(
-                    "resident-anna",
+                    anna.getId(),
                     "org.example.agents.ResidentAgent",
                     new Object[]{anna}
             );
 
             AgentController janAgent = container.createNewAgent(
-                    "resident-jan",
+                    jan.getId(),
                     "org.example.agents.ResidentAgent",
                     new Object[]{jan}
             );
 
             AgentController mariaAgent = container.createNewAgent(
-                    "resident-maria",
+                    maria.getId(),
                     "org.example.agents.ResidentAgent",
                     new Object[]{maria}
             );
