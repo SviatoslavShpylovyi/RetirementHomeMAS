@@ -16,6 +16,8 @@ import java.time.LocalDateTime;
 import jade.lang.acl.MessageTemplate;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import java.util.Map;
+import java.util.HashMap;
 
 public class ScenarioAgent extends Agent {
     private static final String ConverstationId = "activity-proposal-create";
@@ -23,9 +25,12 @@ public class ScenarioAgent extends Agent {
     private static final String ACTIVITY_AGENT_NAME = "activity-agent";
     private static final String SOCIAL_SUPPORT_AGENT_NAME = "social-support-agent";
     private static final String SCENARIO_SOCIAL_SUGGESTIONS_CONVERSATION = "scenario-social-suggestions";
+    private static final String RESOURCE_AGENT_NAME = "resource-agent";
+    private static final String ACTIVITY_RESOURCE_REQUIREMENTS_CONVERSATION = "activity-resource-requirements";
     private final ObjectMapper mapper = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+
     @Override
     protected void setup(){
         System.out.println(getLocalName()+"started");
@@ -105,7 +110,7 @@ public class ScenarioAgent extends Agent {
 
 
         askSocialSupportAgentForSuggestedResidents(proposal);
-        addDefaultRequiredResources(proposal, activity);
+        askResourceAgentForRequiredResources(proposal);
 
         return proposal;
     }
@@ -202,38 +207,120 @@ public class ScenarioAgent extends Agent {
             );
         }
     }
+    // communication with ResourceAgent
+    private void askResourceAgentForRequiredResources(EventProposal proposal) {
+        ACLMessage message = new ACLMessage(ACLMessage.REQUEST);
 
-    private void addDefaultRequiredResources(EventProposal proposal, Activity activity) {
-        switch (activity.getType()) {
-            case MUSIC, MOVIE -> {
-                proposal.addRequiredResource("RES-SPEAKER", 1);
-            }
+        String replyWith = "resource-requirements-"
+                + proposal.getId()
+                + "-"
+                + System.currentTimeMillis();
 
-            case BOARD_GAMES -> {
-                proposal.addRequiredResource("RES-BOARD-GAME", 1);
-            }
+        message.addReceiver(new AID(RESOURCE_AGENT_NAME, AID.ISLOCALNAME));
+        message.setConversationId(ACTIVITY_RESOURCE_REQUIREMENTS_CONVERSATION);
+        message.setReplyWith(replyWith);
+        message.setContent(buildResourceRequirementsRequest(proposal));
 
-            case POKER -> {
-                proposal.addRequiredResource("RES-POKER-CARDS", 1);
-            }
+        send(message);
 
-            case BINGO -> {
-                proposal.addRequiredResource("RES-BINGO-SET", 1);
-            }
+        System.out.println(
+                getLocalName() + " -> " + RESOURCE_AGENT_NAME
+                        + ": asking required resources for proposal " + proposal.getId()
+        );
 
-            case KNITTING, CROCHETING -> {
-                proposal.addRequiredResource("RES-KNITTING-SET", 1);
-            }
+        MessageTemplate responseTemplate = MessageTemplate.and(
+                MessageTemplate.MatchConversationId(ACTIVITY_RESOURCE_REQUIREMENTS_CONVERSATION),
+                MessageTemplate.MatchInReplyTo(replyWith)
+        );
 
-            case FITNESS -> {
-                proposal.addRequiredResource("RES-YOGA-MAT", 1);
-            }
+        ACLMessage response = blockingReceive(responseTemplate, 5000);
 
-            default -> {
-                // No special resources required.
-            }
+        if (response == null) {
+            System.out.println(
+                    getLocalName() + ": no response from " + RESOURCE_AGENT_NAME
+                            + " for proposal " + proposal.getId()
+            );
+            return;
+        }
+
+        System.out.println(
+                getLocalName() + " <- " + RESOURCE_AGENT_NAME
+                        + ": " + response.getContent()
+        );
+
+        applyRequiredResources(proposal, response.getContent());
+    }
+    private void applyRequiredResources(EventProposal proposal, String content) {
+        if (content == null || content.isBlank()) {
+            return;
+        }
+
+        String[] parts = content.split("\\|");
+
+        if (parts.length < 2) {
+            System.out.println("Wrong resource requirements response format.");
+            return;
+        }
+
+        String responseProposalId = parts[0];
+
+        if (!proposal.getId().equals(responseProposalId)) {
+            System.out.println(
+                    "Resource requirements response does not match proposal "
+                            + proposal.getId()
+            );
+            return;
+        }
+
+        String resourcesPart = parts[1];
+
+        if (resourcesPart == null || resourcesPart.isBlank() || resourcesPart.equals("-")) {
+            System.out.println("No shared resources required for proposal " + proposal.getId());
+            return;
+        }
+
+        Map<String, Integer> requiredResources = parseRequiredResources(resourcesPart);
+
+        for (Map.Entry<String, Integer> entry : requiredResources.entrySet()) {
+            proposal.addRequiredResource(entry.getKey(), entry.getValue());
+
+            System.out.println(
+                    "Added required resource "
+                            + entry.getKey()
+                            + " x"
+                            + entry.getValue()
+                            + " to proposal "
+                            + proposal.getId()
+            );
         }
     }
+    private String buildResourceRequirementsRequest(EventProposal proposal) {
+        return proposal.getId()
+                + "|" + proposal.getActivity().getType();
+    }
+    private Map<String, Integer> parseRequiredResources(String resourcesPart) {
+        Map<String, Integer> requiredResources = new HashMap<>();
+
+        if (resourcesPart == null || resourcesPart.isBlank() || resourcesPart.equals("-")) {
+            return requiredResources;
+        }
+
+        String[] resources = resourcesPart.split(",");
+
+        for (String resource : resources) {
+            String[] parts = resource.split(":");
+
+            if (parts.length == 2) {
+                String resourceId = parts[0].trim();
+                int quantity = Integer.parseInt(parts[1].trim());
+
+                requiredResources.put(resourceId, quantity);
+            }
+        }
+
+        return requiredResources;
+    }
+
     private Room chooseDefaultRoom(Activity activity) {
         if (activity.getMaxParticipants() > 15) {
             return new Room(

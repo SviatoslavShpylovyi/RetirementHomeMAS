@@ -20,7 +20,7 @@ public class ResourceAgent extends Agent {
     private Map<String, List<ResourceBooking>> resourceBookings;
 
     private static final String RESOURCE_BOOKING_CONVERSATION = "resource-booking";
-
+    private static final String ACTIVITY_RESOURCE_REQUIREMENTS_CONVERSATION = "activity-resource-requirements";
     @Override
     protected void setup() {
         System.out.println(getLocalName() + " started.");
@@ -35,7 +35,7 @@ public class ResourceAgent extends Agent {
         initializeResources();
 
         addResourceRequestReceiver();
-
+        addResourceRequirementsRequestReceiver();
         printRooms();
         printResources();
         printRoomBookings();
@@ -381,5 +381,123 @@ public class ResourceAgent extends Agent {
             }
         }
     }
+    // communication with ScenarioAgent
+    private void addResourceRequirementsRequestReceiver() {
+        addBehaviour(new CyclicBehaviour() {
+            @Override
+            public void action() {
+                MessageTemplate template = MessageTemplate.and(
+                        MessageTemplate.MatchConversationId(ACTIVITY_RESOURCE_REQUIREMENTS_CONVERSATION),
+                        MessageTemplate.MatchPerformative(ACLMessage.REQUEST)
+                );
 
+                ACLMessage message = myAgent.receive(template);
+
+                if (message == null) {
+                    block();
+                    return;
+                }
+
+                handleResourceRequirementsRequest(message);
+            }
+        });
+    }
+    private void handleResourceRequirementsRequest(ACLMessage message) {
+        String content = message.getContent();
+
+        System.out.println(
+                getLocalName() + " <- " + message.getSender().getLocalName()
+                        + ": resource requirements request: " + content
+        );
+
+        String replyContent;
+
+        try {
+            String[] parts = content.split("\\|");
+
+            if (parts.length < 2) {
+                replyContent = "UNKNOWN|-";
+            } else {
+                String proposalId = parts[0];
+                ActivityType activityType = ActivityType.valueOf(parts[1]);
+
+                Map<String, Integer> requiredResources =
+                        getRequiredResourcesForActivityType(activityType);
+
+                replyContent = proposalId + "|" + buildRequiredResourcesPart(requiredResources);
+            }
+
+        } catch (Exception ex) {
+            replyContent = "UNKNOWN|-";
+
+            System.err.println(getLocalName() + " failed to process resource requirements request:");
+            ex.printStackTrace();
+        }
+
+        ACLMessage reply = message.createReply();
+        reply.setPerformative(ACLMessage.INFORM);
+        reply.setConversationId(ACTIVITY_RESOURCE_REQUIREMENTS_CONVERSATION);
+        reply.setContent(replyContent);
+
+        send(reply);
+
+        System.out.println(
+                getLocalName() + " -> " + message.getSender().getLocalName()
+                        + ": required resources: " + replyContent
+        );
+    }
+    private Map<String, Integer> getRequiredResourcesForActivityType(ActivityType activityType) {
+        Map<String, Integer> requiredResources = new HashMap<>();
+
+        switch (activityType) {
+            case MUSIC, MOVIE -> {
+                requiredResources.put("RES-SPEAKER", 1);
+            }
+
+            case BOARD_GAMES -> {
+                requiredResources.put("RES-BOARD-GAME", 1);
+            }
+
+            case POKER -> {
+                requiredResources.put("RES-POKER-CARDS", 1);
+            }
+
+            case BINGO -> {
+                requiredResources.put("RES-BINGO-SET", 1);
+            }
+
+            case KNITTING, CROCHETING -> {
+                requiredResources.put("RES-KNITTING-SET", 1);
+            }
+
+            case FITNESS -> {
+                requiredResources.put("RES-YOGA-MAT", 1);
+            }
+
+            default -> {
+                // No special shared resources required.
+            }
+        }
+
+        return requiredResources;
+    }
+    private String buildRequiredResourcesPart(Map<String, Integer> requiredResources) {
+        if (requiredResources == null || requiredResources.isEmpty()) {
+            return "-";
+        }
+
+        StringBuilder builder = new StringBuilder();
+
+        for (Map.Entry<String, Integer> entry : requiredResources.entrySet()) {
+            if (builder.length() > 0) {
+                builder.append(",");
+            }
+
+            builder.append(entry.getKey())
+                    .append(":")
+                    .append(entry.getValue());
+        }
+
+        return builder.toString();
+    }
 }
