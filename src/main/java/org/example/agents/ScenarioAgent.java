@@ -13,7 +13,7 @@ import org.example.model.Room;
 import org.example.model.TimeSlot;
 import org.example.model.ParticipationStatus;
 import java.time.LocalDateTime;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import jade.lang.acl.MessageTemplate;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
@@ -21,6 +21,8 @@ public class ScenarioAgent extends Agent {
     private static final String ConverstationId = "activity-proposal-create";
     private static final String SCENARIO_TO_ACTIVITY_CONVERSATION = "scenario-event-proposal";
     private static final String ACTIVITY_AGENT_NAME = "activity-agent";
+    private static final String SOCIAL_SUPPORT_AGENT_NAME = "social-support-agent";
+    private static final String SCENARIO_SOCIAL_SUGGESTIONS_CONVERSATION = "scenario-social-suggestions";
     private final ObjectMapper mapper = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
@@ -30,7 +32,8 @@ public class ScenarioAgent extends Agent {
         addBehaviour(new CyclicBehaviour() {
             @Override
             public void action(){
-                ACLMessage msg = receive();
+                MessageTemplate template = MessageTemplate.MatchConversationId(ConverstationId);
+                ACLMessage msg = receive(template);
                 if(msg == null){
                     block();
                     return;
@@ -101,31 +104,105 @@ public class ScenarioAgent extends Agent {
         );
 
 
-        addTemporarySuggestedResidents(proposal, activity);
+        askSocialSupportAgentForSuggestedResidents(proposal);
         addDefaultRequiredResources(proposal, activity);
 
         return proposal;
     }
-    private void addTemporarySuggestedResidents(EventProposal proposal, Activity activity) {
-        switch (activity.getType()) {
-            case MUSIC, SOCIAL_TEA, BINGO -> {
-                proposal.updateParticipationStatus("R1", ParticipationStatus.SUGGESTED);
-            }
+    // communication with SocialSupportAgent
+    private void askSocialSupportAgentForSuggestedResidents(EventProposal proposal) {
+        ACLMessage message = new ACLMessage(ACLMessage.REQUEST);
 
-            case BOARD_GAMES, POKER, READING -> {
-                proposal.updateParticipationStatus("R2", ParticipationStatus.SUGGESTED);
-            }
+        String replyWith = "social-suggestions-" + proposal.getId() + "-" + System.currentTimeMillis();
 
-            case ART, KNITTING, CROCHETING, MOVIE -> {
-                proposal.updateParticipationStatus("R3", ParticipationStatus.SUGGESTED);
-            }
+        message.addReceiver(new AID(SOCIAL_SUPPORT_AGENT_NAME, AID.ISLOCALNAME));
+        message.setConversationId(SCENARIO_SOCIAL_SUGGESTIONS_CONVERSATION);
+        message.setReplyWith(replyWith);
+        message.setContent(buildSocialSuggestionRequest(proposal));
 
-            default -> {
-                proposal.updateParticipationStatus("R1", ParticipationStatus.SUGGESTED);
-                proposal.updateParticipationStatus("R2", ParticipationStatus.SUGGESTED);
-            }
+        send(message);
+
+        System.out.println(
+                getLocalName() + " -> " + SOCIAL_SUPPORT_AGENT_NAME
+                        + ": asking resident suggestions for proposal " + proposal.getId()
+        );
+
+        MessageTemplate responseTemplate = MessageTemplate.and(
+                MessageTemplate.MatchConversationId(SCENARIO_SOCIAL_SUGGESTIONS_CONVERSATION),
+                MessageTemplate.MatchInReplyTo(replyWith)
+        );
+
+        ACLMessage response = blockingReceive(responseTemplate, 5000);
+
+        if (response == null) {
+            System.out.println(
+                    getLocalName() + ": no response from " + SOCIAL_SUPPORT_AGENT_NAME
+                            + " for proposal " + proposal.getId()
+            );
+            return;
+        }
+
+        System.out.println(
+                getLocalName() + " <- " + SOCIAL_SUPPORT_AGENT_NAME
+                        + ": " + response.getContent()
+        );
+
+        applySocialSupportSuggestions(proposal, response.getContent());
+    }
+    private String buildSocialSuggestionRequest(EventProposal proposal) {
+        Activity activity = proposal.getActivity();
+
+        return proposal.getId()
+                + "|" + activity.getId()
+                + "|" + activity.getName()
+                + "|" + activity.getType()
+                + "|" + activity.getMaxParticipants()
+                + "|" + activity.getRequiredMobilityLevel();
+    }
+    private void applySocialSupportSuggestions(EventProposal proposal, String content) {
+        if (content == null || content.isBlank()) {
+            return;
+        }
+
+        String[] parts = content.split("\\|");
+
+        if (parts.length < 2) {
+            System.out.println("Wrong social suggestion response format.");
+            return;
+        }
+
+        String responseProposalId = parts[0];
+
+        if (!proposal.getId().equals(responseProposalId)) {
+            System.out.println(
+                    "Social suggestion response does not match proposal "
+                            + proposal.getId()
+            );
+            return;
+        }
+
+        String residentsPart = parts[1];
+
+        if (residentsPart == null || residentsPart.isBlank() || residentsPart.equals("-")) {
+            System.out.println("No residents suggested for proposal " + proposal.getId());
+            return;
+        }
+
+        String[] residentIds = residentsPart.split(",");
+
+        for (String residentId : residentIds) {
+            proposal.updateParticipationStatus(
+                    residentId,
+                    ParticipationStatus.SUGGESTED
+            );
+
+            System.out.println(
+                    "Added suggested resident " + residentId
+                            + " to proposal " + proposal.getId()
+            );
         }
     }
+
     private void addDefaultRequiredResources(EventProposal proposal, Activity activity) {
         switch (activity.getType()) {
             case MUSIC, MOVIE -> {

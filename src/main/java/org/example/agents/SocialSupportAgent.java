@@ -1,12 +1,17 @@
 package org.example.agents;
 
 import jade.core.Agent;
-import jade.core.behaviours.OneShotBehaviour;
 import org.example.model.Activity;
 import org.example.model.EventProposal;
 import org.example.model.ParticipationStatus;
 import org.example.model.Resident;
 
+import jade.core.behaviours.CyclicBehaviour;
+import jade.lang.acl.ACLMessage;
+import jade.lang.acl.MessageTemplate;
+import org.example.model.ActivityType;
+import org.example.model.MobilityLevel;
+import java.util.stream.Collectors;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -17,7 +22,8 @@ public class SocialSupportAgent extends Agent {
     private Map<String, Integer> participationCounts;
     private Map<String, Integer> declinedCounts;
     private List<String> supportLog;
-
+    private List<Resident> knownResidents;
+    private static final String SCENARIO_SOCIAL_SUGGESTIONS_CONVERSATION = "scenario-social-suggestions";
     @Override
     protected void setup() {
         System.out.println(getLocalName() + " started.");
@@ -25,12 +31,24 @@ public class SocialSupportAgent extends Agent {
         participationCounts = new HashMap<>();
         declinedCounts = new HashMap<>();
         supportLog = new ArrayList<>();
+        knownResidents = new ArrayList<>();
 
-        addBehaviour(new OneShotBehaviour() {
-            @Override
-            public void action() {
+        Object[] args = getArguments();
+
+        if (args != null && args.length > 0 && args[0] instanceof List<?>) {
+            for (Object item : (List<?>) args[0]) {
+                if (item instanceof Resident) {
+                    knownResidents.add((Resident) item);
+                }
             }
-        });
+        }
+
+        System.out.println(getLocalName() + " knows residents:");
+        for (Resident resident : knownResidents) {
+            System.out.println(" - " + resident);
+        }
+
+        addScenarioSuggestionRequestReceiver();
     }
 
     public boolean isActivityMatchingPreferences(Resident resident, Activity activity) {
@@ -217,6 +235,101 @@ public class SocialSupportAgent extends Agent {
                         + " suggestion(s) for resident "
                         + resident.getName()
         );
+    }
+    // communication with ScenarioAgent
+    private void addScenarioSuggestionRequestReceiver() {
+        addBehaviour(new CyclicBehaviour() {
+            @Override
+            public void action() {
+                MessageTemplate template = MessageTemplate.and(
+                        MessageTemplate.MatchConversationId(SCENARIO_SOCIAL_SUGGESTIONS_CONVERSATION),
+                        MessageTemplate.MatchPerformative(ACLMessage.REQUEST)
+                );
+
+                ACLMessage message = myAgent.receive(template);
+
+                if (message == null) {
+                    block();
+                    return;
+                }
+
+                handleScenarioSuggestionRequest(message);
+            }
+        });
+    }
+    private void handleScenarioSuggestionRequest(ACLMessage message) {
+        String content = message.getContent();
+
+        System.out.println(
+                getLocalName() + " <- " + message.getSender().getLocalName()
+                        + ": suggestion request: " + content
+        );
+
+        String replyContent;
+
+        try {
+            EventProposal proposal = parseProposalRequest(content);
+
+            suggestResidentsForProposal(proposal, knownResidents);
+
+            replyContent = buildSuggestedResidentsResponse(proposal);
+
+        } catch (Exception ex) {
+            System.err.println(getLocalName() + " failed to process suggestion request:");
+            ex.printStackTrace();
+
+            replyContent = "UNKNOWN|-";
+        }
+
+        ACLMessage reply = message.createReply();
+        reply.setPerformative(ACLMessage.INFORM);
+        reply.setConversationId(SCENARIO_SOCIAL_SUGGESTIONS_CONVERSATION);
+        reply.setContent(replyContent);
+
+        send(reply);
+
+        System.out.println(
+                getLocalName() + " -> " + message.getSender().getLocalName()
+                        + ": suggested residents: " + replyContent
+        );
+    }
+    private EventProposal parseProposalRequest(String content) {
+        String[] parts = content.split("\\|");
+
+        if (parts.length < 6) {
+            throw new IllegalArgumentException(
+                    "Wrong social suggestion request format. Expected: proposalId|activityId|activityName|activityType|maxParticipants|requiredMobilityLevel"
+            );
+        }
+
+        String proposalId = parts[0];
+
+        Activity activity = new Activity(
+                parts[1],
+                parts[2],
+                ActivityType.valueOf(parts[3]),
+                Integer.parseInt(parts[4]),
+                MobilityLevel.valueOf(parts[5])
+        );
+
+        return new EventProposal(
+                proposalId,
+                null,
+                activity,
+                null
+        );
+    }
+    private String buildSuggestedResidentsResponse(EventProposal proposal) {
+        if (proposal.getParticipantStatuses().isEmpty()) {
+            return proposal.getId() + "|-";
+        }
+
+        String residentIds = proposal.getParticipantStatuses()
+                .keySet()
+                .stream()
+                .collect(Collectors.joining(","));
+
+        return proposal.getId() + "|" + residentIds;
     }
 
 

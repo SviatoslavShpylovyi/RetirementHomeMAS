@@ -112,7 +112,7 @@ public class Engine {
             AgentController socialSupportAgent = container.createNewAgent(
                     "social-support-agent",
                     "org.example.agents.SocialSupportAgent",
-                    null
+                    new Object[]{List.of(anna, jan, maria)}
             );
 
             AgentController scenarioAgent = container.createNewAgent(
