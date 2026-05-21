@@ -14,6 +14,8 @@ import jade.core.AID;
 import jade.core.behaviours.CyclicBehaviour;
 import jade.lang.acl.ACLMessage;
 import jade.lang.acl.MessageTemplate;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.Map;
 
@@ -29,6 +31,9 @@ public class ActivityAgent extends Agent {
     private static final String RESOURCE_AGENT_NAME = "resource-agent";
     private  static final String RESOURCE_BOOKING_CONVERSATION = "resource-booking";
 
+    private static final String SCENARIO_TO_ACTIVITY_CONVERSATION = "scenario-event-proposal";
+    private final ObjectMapper mapper = new ObjectMapper();
+
     @Override
     protected void setup(){
         System.out.println(getLocalName() + " started.");
@@ -38,6 +43,7 @@ public class ActivityAgent extends Agent {
 
         addHealthAnswerReceiver();
         addResourceAnswerReceiver();
+        addScenarioProposalReceiver();
 
         addBehaviour(new OneShotBehaviour() {
             @Override
@@ -439,6 +445,124 @@ public class ActivityAgent extends Agent {
             System.out.println(" - " + proposal);
         }
     }
+    // communication with ScenarioAgent
+    private void addScenarioProposalReceiver() {
+        addBehaviour(new CyclicBehaviour() {
+            @Override
+            public void action() {
+                MessageTemplate template = MessageTemplate.and(
+                        MessageTemplate.MatchConversationId(SCENARIO_TO_ACTIVITY_CONVERSATION),
+                        MessageTemplate.MatchPerformative(ACLMessage.PROPOSE)
+                );
+
+                ACLMessage message = myAgent.receive(template);
+
+                if (message == null) {
+                    block();
+                    return;
+                }
+
+                handleScenarioEventProposal(message.getContent());
+            }
+        });
+    }
+    private void handleScenarioEventProposal(String content) {
+        if (content == null || content.isBlank()) {
+            System.out.println("Received empty event proposal from ScenarioAgent.");
+            return;
+        }
+
+        try {
+            EventProposal proposal = parseEventProposal(content);
+            Activity activity = proposal.getActivity();
+
+            if (findActivityById(activity.getId()).isEmpty()) {
+                addActivity(activity);
+            }
+
+            if (findProposalById(proposal.getId()).isPresent()) {
+                System.out.println("Event proposal already exists: " + proposal.getId());
+                return;
+            }
+
+            addEventProposal(proposal);
+
+            System.out.println(getLocalName() + " <- scenario-agent: received event proposal");
+            System.out.println(proposal);
+
+            printActivities();
+            printEventProposals();
+
+            askHealthAgentToCheckProposal(proposal);
+
+        } catch (Exception ex) {
+            System.err.println("ActivityAgent failed to process event proposal from ScenarioAgent:");
+            ex.printStackTrace();
+        }
+    }
+    private EventProposal parseEventProposal(String json) throws Exception {
+        JsonNode root = mapper.readTree(json);
+
+        String proposalId = root.get("id").asText();
+
+        JsonNode activityNode = root.get("activity");
+
+        Activity activity = new Activity(
+                activityNode.get("id").asText(),
+                activityNode.get("name").asText(),
+                ActivityType.valueOf(activityNode.get("type").asText()),
+                activityNode.get("maxParticipants").asInt(),
+                MobilityLevel.valueOf(activityNode.get("requiredMobilityLevel").asText())
+        );
+
+        JsonNode roomNode = root.get("room");
+
+        Room room = new Room(
+                roomNode.get("id").asText(),
+                roomNode.get("name").asText(),
+                roomNode.get("capacity").asInt(),
+                roomNode.get("accessible").asBoolean()
+        );
+
+        JsonNode timeSlotNode = root.get("timeSlot");
+
+        TimeSlot timeSlot = new TimeSlot(
+                LocalDateTime.parse(timeSlotNode.get("startTime").asText()),
+                LocalDateTime.parse(timeSlotNode.get("endTime").asText())
+        );
+
+        EventProposal proposal = new EventProposal(
+                proposalId,
+                timeSlot,
+                activity,
+                room
+        );
+
+        JsonNode participantStatusesNode = root.get("participantStatuses");
+
+        if (participantStatusesNode != null && participantStatusesNode.isObject()) {
+            participantStatusesNode.fields().forEachRemaining(entry -> {
+                String residentId = entry.getKey();
+                ParticipationStatus status = ParticipationStatus.valueOf(entry.getValue().asText());
+
+                proposal.updateParticipationStatus(residentId, status);
+            });
+        }
+
+        JsonNode requiredResourcesNode = root.get("requiredResources");
+
+        if (requiredResourcesNode != null && requiredResourcesNode.isObject()) {
+            requiredResourcesNode.fields().forEachRemaining(entry -> {
+                String resourceId = entry.getKey();
+                int quantity = entry.getValue().asInt();
+
+                proposal.addRequiredResource(resourceId, quantity);
+            });
+        }
+
+        return proposal;
+    }
+
 
 
 
