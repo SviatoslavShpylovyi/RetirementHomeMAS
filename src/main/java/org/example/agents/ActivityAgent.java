@@ -4,7 +4,7 @@ import jade.core.Agent;
 import jade.core.behaviours.OneShotBehaviour;
 import jdk.jfr.Event;
 import org.example.model.*;
-
+import java.util.Collections;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -37,7 +37,14 @@ public class ActivityAgent extends Agent {
 
     private static final String RESIDENT_INVITATION_CONVERSATION = "resident-activity-invitation";
 
+    private static final String RESIDENT_BOOKING_CONFIRMATION_CONVERSATION = "resident-event-booked";
+
+    private static final String SOCIAL_SUPPORT_AGENT_NAME = "social-support-agent";
+    private static final String PARTICIPATION_HISTORY_CONVERSATION = "participation-history-update";
+
+
     private Map<String, Integer> pendingInvitationCounts;
+    private Map<String, List<String>> invitedResidentsByProposal;
 
     @Override
     protected void setup(){
@@ -46,6 +53,7 @@ public class ActivityAgent extends Agent {
         activities = new ArrayList<>();
         eventProposals = new ArrayList<>();
         pendingInvitationCounts = new HashMap<>();
+        invitedResidentsByProposal = new HashMap<>();
         addHealthAnswerReceiver();
         addResourceAnswerReceiver();
         addScenarioProposalReceiver();
@@ -152,8 +160,24 @@ public class ActivityAgent extends Agent {
         String proposalId = parts[0];
         String result = parts[1];
 
+        Optional<EventProposal> optionalProposal = findProposalById(proposalId);
+
+        if (optionalProposal.isEmpty()) {
+            System.out.println("Proposal not found: " + proposalId);
+            return;
+        }
+
+        EventProposal proposal = optionalProposal.get();
+
         if(result.equals("ACCEPTED")){
+            proposal.approve();
             System.out.println("Proposal " + proposalId + " was booked successfully.");
+
+            // Diagram step 8: update participation history.
+            sendParticipationHistoryUpdate(proposal, "BOOKED");
+
+            // Diagram step 9: inform residents that event is booked.
+            informConfirmedResidentsEventBooked(proposal);
         }else{
             String reason = "No reason given.";
 
@@ -162,12 +186,132 @@ public class ActivityAgent extends Agent {
             }
 
             System.out.println("Proposal " + proposalId + " was rejected by ResourceAgent: " + reason);
-            cancelProposal(proposalId);
 
+            // Event was not booked. Confirmed residents are not counted as final participants.
+            // Refusals are still useful for SocialSupportAgent history.
+            sendParticipationHistoryUpdate(proposal, "CANCELLED");
+
+            cancelProposal(proposalId);
         }
 
         printEventProposals();
     }
+    private void sendParticipationHistoryUpdate(EventProposal proposal, String outcome) {
+        ACLMessage message = new ACLMessage(ACLMessage.INFORM);
+
+        message.addReceiver(new AID(SOCIAL_SUPPORT_AGENT_NAME, AID.ISLOCALNAME));
+        message.setConversationId(PARTICIPATION_HISTORY_CONVERSATION);
+        message.setContent(buildParticipationHistoryMessage(proposal, outcome));
+
+        send(message);
+
+        System.out.println(
+                getLocalName() + " -> " + SOCIAL_SUPPORT_AGENT_NAME
+                        + ": participation history update for proposal "
+                        + proposal.getId()
+                        + " with outcome "
+                        + outcome
+        );
+    }
+    private String buildParticipationHistoryMessage(EventProposal proposal, String outcome) {
+        Activity activity = proposal.getActivity();
+
+        return proposal.getId()
+                + "|" + outcome
+                + "|" + activity.getId()
+                + "|" + activity.getType()
+                + "|" + buildFinalParticipantStatusesPart(proposal);
+    }
+    private String buildFinalParticipantStatusesPart(EventProposal proposal) {
+        List<String> invitedResidentIds = invitedResidentsByProposal.getOrDefault(
+                proposal.getId(),
+                Collections.emptyList()
+        );
+
+        if (invitedResidentIds.isEmpty()) {
+            return "-";
+        }
+
+        StringBuilder builder = new StringBuilder();
+
+        for (String residentId : invitedResidentIds) {
+            ParticipationStatus status = proposal.getParticipantStatuses().get(residentId);
+
+            if (status == null) {
+                continue;
+            }
+
+            if (builder.length() > 0) {
+                builder.append(",");
+            }
+
+            builder.append(residentId).append(":").append(status);
+        }
+
+        if (builder.length() == 0) {
+            return "-";
+        }
+
+        return builder.toString();
+    }
+    private void informConfirmedResidentsEventBooked(EventProposal proposal) {
+        List<String> confirmedResidentIds = proposal.getParticipantStatuses()
+                .entrySet()
+                .stream()
+                .filter(entry -> entry.getValue() == ParticipationStatus.CONFIRMED)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
+
+        if (confirmedResidentIds.isEmpty()) {
+            System.out.println(
+                    "No confirmed residents to inform for proposal "
+                            + proposal.getId()
+            );
+            return;
+        }
+
+        for (String residentId : confirmedResidentIds) {
+            sendEventBookedNotification(proposal, residentId);
+        }
+    }
+
+    private void sendEventBookedNotification(EventProposal proposal, String residentId) {
+        ACLMessage message = new ACLMessage(ACLMessage.INFORM);
+
+        message.addReceiver(new AID(residentId, AID.ISLOCALNAME));
+        message.setConversationId(RESIDENT_BOOKING_CONFIRMATION_CONVERSATION);
+        message.setContent(buildEventBookedMessage(proposal));
+
+        send(message);
+
+        System.out.println(
+                getLocalName() + " -> " + residentId
+                        + ": event booked notification for proposal "
+                        + proposal.getId()
+        );
+    }
+
+    private String buildEventBookedMessage(EventProposal proposal) {
+        Activity activity = proposal.getActivity();
+        TimeSlot timeSlot = proposal.getTimeSlot();
+        Room room = proposal.getRoom();
+
+        return proposal.getId()
+                + "|" + activity.getId()
+                + "|" + activity.getName()
+                + "|" + activity.getType()
+                + "|" + timeSlot.getStartTime()
+                + "|" + timeSlot.getEndTime()
+                + "|" + room.getId()
+                + "|" + room.getName();
+    }
+
+
+
+
+
+
+
 
     // communication with HealthAgent
     private void askHealthAgentToCheckProposal(EventProposal proposal){
@@ -465,6 +609,10 @@ public class ActivityAgent extends Agent {
         }
 
         eventProposals.remove(optionalProposal.get());
+
+        pendingInvitationCounts.remove(proposalId);
+        invitedResidentsByProposal.remove(proposalId);
+
         System.out.println("Cancelled proposal: " + proposalId);
     }
 
@@ -621,11 +769,23 @@ public class ActivityAgent extends Agent {
 
         pendingInvitationCounts.put(proposal.getId(), safeResidentIds.size());
 
+        // IMPORTANT for part 8:
+        // We need to remember which residents were contacted,
+        // so later we can tell SocialSupportAgent who accepted/refused.
+        invitedResidentsByProposal.put(
+                proposal.getId(),
+                new ArrayList<>(safeResidentIds)
+        );
+
         for (String residentId : safeResidentIds) {
             sendInvitationToResident(proposal, residentId);
             proposal.updateParticipationStatus(residentId, ParticipationStatus.INVITED);
         }
     }
+
+
+
+
     private void sendInvitationToResident(EventProposal proposal, String residentId) {
         String residentAgentName = residentId;
 
@@ -758,6 +918,9 @@ public class ActivityAgent extends Agent {
                     "Proposal " + proposalId
                             + " has no confirmed residents. Cancelling proposal."
             );
+
+            // Important: SocialSupportAgent should learn that residents declined.
+            sendParticipationHistoryUpdate(proposal, "CANCELLED");
 
             cancelProposal(proposalId);
             return;

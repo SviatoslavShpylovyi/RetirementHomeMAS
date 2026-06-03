@@ -24,6 +24,8 @@ public class SocialSupportAgent extends Agent {
     private List<String> supportLog;
     private List<Resident> knownResidents;
     private static final String SCENARIO_SOCIAL_SUGGESTIONS_CONVERSATION = "scenario-social-suggestions";
+    private static final String PARTICIPATION_HISTORY_CONVERSATION = "participation-history-update";
+
     @Override
     protected void setup() {
         System.out.println(getLocalName() + " started.");
@@ -49,6 +51,8 @@ public class SocialSupportAgent extends Agent {
         }
 
         addScenarioSuggestionRequestReceiver();
+        addParticipationHistoryUpdateReceiver();
+
     }
 
     public boolean isActivityMatchingPreferences(Resident resident, Activity activity) {
@@ -331,6 +335,142 @@ public class SocialSupportAgent extends Agent {
 
         return proposal.getId() + "|" + residentIds;
     }
+
+    // communication with ActivityAgent: participation history update
+    private void addParticipationHistoryUpdateReceiver() {
+        addBehaviour(new CyclicBehaviour() {
+            @Override
+            public void action() {
+                MessageTemplate template = MessageTemplate.and(
+                        MessageTemplate.MatchConversationId(PARTICIPATION_HISTORY_CONVERSATION),
+                        MessageTemplate.MatchPerformative(ACLMessage.INFORM)
+                );
+
+                ACLMessage message = myAgent.receive(template);
+
+                if (message == null) {
+                    block();
+                    return;
+                }
+
+                handleParticipationHistoryUpdate(message);
+            }
+        });
+    }
+    private void handleParticipationHistoryUpdate(ACLMessage message) {
+        String content = message.getContent();
+
+        System.out.println(
+                getLocalName() + " <- " + message.getSender().getLocalName()
+                        + ": participation history update: " + content
+        );
+
+        try {
+            applyParticipationHistoryUpdate(content);
+            printParticipationHistory();
+        } catch (Exception ex) {
+            System.err.println(getLocalName() + " failed to process participation history update:");
+            ex.printStackTrace();
+        }
+    }
+    private void applyParticipationHistoryUpdate(String content) {
+        if (content == null || content.isBlank()) {
+            return;
+        }
+
+        String[] parts = content.split("\\|", -1);
+
+        if (parts.length < 5) {
+            throw new IllegalArgumentException(
+                    "Wrong participation history format. Expected: proposalId|outcome|activityId|activityType|residentId:status,..."
+            );
+        }
+
+        String proposalId = parts[0];
+        String outcome = parts[1];
+        String activityId = parts[2];
+        ActivityType activityType = ActivityType.valueOf(parts[3]);
+        String statusesPart = parts[4];
+
+        supportLog.add(
+                "Received history update for proposal " + proposalId
+                        + ", activity " + activityId
+                        + " (" + activityType + ")"
+                        + ", outcome " + outcome
+        );
+
+        if (statusesPart == null || statusesPart.isBlank() || statusesPart.equals("-")) {
+            supportLog.add("No resident statuses to record for proposal " + proposalId);
+            return;
+        }
+
+        boolean eventWasBooked = "BOOKED".equals(outcome);
+
+        String[] residentStatuses = statusesPart.split(",");
+
+        for (String residentStatus : residentStatuses) {
+            String[] statusParts = residentStatus.split(":");
+
+            if (statusParts.length != 2) {
+                continue;
+            }
+
+            String residentId = statusParts[0].trim();
+            ParticipationStatus status = ParticipationStatus.valueOf(statusParts[1].trim());
+
+            recordFinalParticipationStatus(residentId, status, eventWasBooked);
+        }
+    }
+    private void recordFinalParticipationStatus(
+            String residentId,
+            ParticipationStatus status,
+            boolean eventWasBooked
+    ) {
+        if (residentId == null || status == null) {
+            return;
+        }
+
+        if (status == ParticipationStatus.CONFIRMED && eventWasBooked) {
+            int currentCount = participationCounts.getOrDefault(residentId, 0);
+            participationCounts.put(residentId, currentCount + 1);
+        }
+
+        if (status == ParticipationStatus.DECLINED) {
+            int currentCount = declinedCounts.getOrDefault(residentId, 0);
+            declinedCounts.put(residentId, currentCount + 1);
+        }
+
+        supportLog.add(
+                "Recorded final status " + status
+                        + " for resident " + residentId
+                        + ", eventWasBooked=" + eventWasBooked
+        );
+    }
+    private void printParticipationHistory() {
+        System.out.println("\nParticipation history known by " + getLocalName() + ":");
+
+        if (participationCounts.isEmpty() && declinedCounts.isEmpty()) {
+            System.out.println(" - No participation history yet.");
+            return;
+        }
+
+        for (Resident resident : knownResidents) {
+            String residentId = resident.getId();
+
+            System.out.println(
+                    " - " + residentId
+                            + " confirmed=" + getParticipationCount(residentId)
+                            + ", declined=" + getDeclinedCount(residentId)
+            );
+        }
+    }
+
+
+
+
+
+
+
 
 
 }
