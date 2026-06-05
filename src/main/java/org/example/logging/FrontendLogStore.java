@@ -27,7 +27,6 @@ public final class FrontendLogStore {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private FrontendLogStore() {
-        // Utility class: should not be instantiated.
     }
 
     public static LogEntry info(
