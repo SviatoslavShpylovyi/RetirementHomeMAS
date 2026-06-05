@@ -131,7 +131,7 @@ public class Engine {
                     "org.example.agents.ApiGatewayAgent",
                     new Object[]{8080}
             );
-
+            socialSupportAgent.start();
             annaAgent.start();
             janAgent.start();
             mariaAgent.start();
@@ -139,7 +139,7 @@ public class Engine {
             activityAgent.start();
             resourceAgent.start();
             healthAgent.start();
-            socialSupportAgent.start();
+
             apiGatewayAgent.start();
             scenarioAgent.start();
             facilitatorAgent.start();
