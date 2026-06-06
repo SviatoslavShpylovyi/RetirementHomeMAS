@@ -4,6 +4,8 @@ import jade.core.Agent;
 import jade.core.behaviours.OneShotBehaviour;
 import jdk.jfr.Event;
 import org.example.model.*;
+import org.example.logging.AgentLogSender;
+import org.example.logging.FrontendLogStore;
 import java.util.Collections;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -172,6 +174,16 @@ public class ActivityAgent extends Agent {
         if(result.equals("ACCEPTED")){
             proposal.approve();
             System.out.println("Proposal " + proposalId + " was booked successfully.");
+            AgentLogSender.info(
+                    ActivityAgent.this,
+                    "EVENT_BOOKED",
+                    "Proposal " + proposalId + " was booked successfully",
+                    Map.of(
+                            "proposalId", proposalId,
+                            "confirmedResidents", countConfirmedParticipants(proposal),
+                            "outcome", "BOOKED"
+                    )
+            );
 
             // Diagram step 8: update participation history.
             sendParticipationHistoryUpdate(proposal, "BOOKED");
@@ -186,6 +198,16 @@ public class ActivityAgent extends Agent {
             }
 
             System.out.println("Proposal " + proposalId + " was rejected by ResourceAgent: " + reason);
+            AgentLogSender.warn(
+                    ActivityAgent.this,
+                    "EVENT_CANCELLED_RESOURCE_REJECTED",
+                    "Proposal " + proposalId + " was rejected by ResourceAgent: " + reason,
+                    Map.of(
+                            "proposalId", proposalId,
+                            "outcome", "CANCELLED",
+                            "reason", reason
+                    )
+            );
 
             // Event was not booked. Confirmed residents are not counted as final participants.
             // Refusals are still useful for SocialSupportAgent history.
@@ -843,7 +865,7 @@ public class ActivityAgent extends Agent {
 
         System.out.println(getLocalName() + " <- resident: " + content);
 
-        String[] parts = content.split("\\|");
+        String[] parts = content.split("\\|", -1);
 
         if (parts.length < 3) {
             System.out.println("Wrong resident invitation answer format.");
@@ -854,6 +876,11 @@ public class ActivityAgent extends Agent {
         String residentId = parts[1];
         String answer = parts[2];
 
+        String reason = "No reason given.";
+        if (parts.length >= 4 && !parts[3].isBlank()) {
+            reason = parts[3];
+        }
+
         Optional<EventProposal> optionalProposal = findProposalById(proposalId);
 
         if (optionalProposal.isEmpty()) {
@@ -863,32 +890,54 @@ public class ActivityAgent extends Agent {
 
         EventProposal proposal = optionalProposal.get();
 
-        if ("ACCEPTED".equals(answer)) {
+        if ("ACCEPTED".equalsIgnoreCase(answer)) {
             proposal.updateParticipationStatus(residentId, ParticipationStatus.CONFIRMED);
 
             System.out.println(
                     "Resident " + residentId
                             + " accepted proposal " + proposalId
             );
+
+            AgentLogSender.info(
+                    ActivityAgent.this,
+                    "RESIDENT_ACCEPTED_PROPOSAL",
+                    "Resident " + residentId + " accepted proposal " + proposalId,
+                    Map.of(
+                            "proposalId", proposalId,
+                            "residentId", residentId,
+                            "answer", "ACCEPTED",
+                            "finalStatus", ParticipationStatus.CONFIRMED.toString()
+                    )
+            );
+
         } else {
             proposal.updateParticipationStatus(residentId, ParticipationStatus.DECLINED);
-
-            String reason = "No reason given.";
-
-            if (parts.length >= 4) {
-                reason = parts[3];
-            }
 
             System.out.println(
                     "Resident " + residentId
                             + " declined proposal " + proposalId
                             + ": " + reason
             );
+
+            AgentLogSender.info(
+                    ActivityAgent.this,
+                    "RESIDENT_DECLINED_PROPOSAL",
+                    "Resident " + residentId + " declined proposal " + proposalId + ": " + reason,
+                    Map.of(
+                            "proposalId", proposalId,
+                            "residentId", residentId,
+                            "answer", "DECLINED",
+                            "finalStatus", ParticipationStatus.DECLINED.toString(),
+                            "reason", reason
+                    )
+            );
         }
 
         decreasePendingInvitationCount(proposalId);
         continueAfterAllResidentAnswers(proposalId);
     }
+
+
     private void decreasePendingInvitationCount(String proposalId) {
         int currentCount = pendingInvitationCounts.getOrDefault(proposalId, 0);
 
@@ -918,8 +967,15 @@ public class ActivityAgent extends Agent {
                     "Proposal " + proposalId
                             + " has no confirmed residents. Cancelling proposal."
             );
-
-            // Important: SocialSupportAgent should learn that residents declined.
+            AgentLogSender.warn(
+                    ActivityAgent.this,
+                    "EVENT_CANCELLED_NO_CONFIRMED_RESIDENTS",
+                    "Proposal " + proposalId + " has no confirmed residents",
+                    Map.of(
+                            "proposalId", proposalId,
+                            "outcome", "CANCELLED"
+                    )
+            );
             sendParticipationHistoryUpdate(proposal, "CANCELLED");
 
             cancelProposal(proposalId);

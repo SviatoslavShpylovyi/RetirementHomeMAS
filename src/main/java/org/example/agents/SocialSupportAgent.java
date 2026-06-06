@@ -5,6 +5,8 @@ import org.example.model.Activity;
 import org.example.model.EventProposal;
 import org.example.model.ParticipationStatus;
 import org.example.model.Resident;
+import org.example.logging.AgentLogSender;
+import org.example.logging.FrontendLogStore;
 
 import jade.core.behaviours.CyclicBehaviour;
 import jade.lang.acl.ACLMessage;
@@ -16,6 +18,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 public class SocialSupportAgent extends Agent {
 
@@ -23,6 +27,7 @@ public class SocialSupportAgent extends Agent {
     private Map<String, Integer> declinedCounts;
     private List<String> supportLog;
     private List<Resident> knownResidents;
+    private final ObjectMapper logMapper = new ObjectMapper();
     private static final String SCENARIO_SOCIAL_SUGGESTIONS_CONVERSATION = "scenario-social-suggestions";
     private static final String PARTICIPATION_HISTORY_CONVERSATION = "participation-history-update";
 
@@ -52,6 +57,12 @@ public class SocialSupportAgent extends Agent {
 
         addScenarioSuggestionRequestReceiver();
         addParticipationHistoryUpdateReceiver();
+        addFrontendLogEventReceiver();
+        FrontendLogStore.info(
+                getLocalName(),
+                "AGENT_STARTED",
+                "SocialSupportAgent started and is ready to receive frontend log events"
+        );
 
     }
 
@@ -371,6 +382,13 @@ public class SocialSupportAgent extends Agent {
         } catch (Exception ex) {
             System.err.println(getLocalName() + " failed to process participation history update:");
             ex.printStackTrace();
+            FrontendLogStore.error(
+                    getLocalName(),
+                    "PARTICIPATION_HISTORY_UPDATE_FAILED",
+                    "SocialSupportAgent failed to process participation history update",
+                    ex
+            );
+
         }
     }
     private void applyParticipationHistoryUpdate(String content) {
@@ -391,7 +409,7 @@ public class SocialSupportAgent extends Agent {
         String activityId = parts[2];
         ActivityType activityType = ActivityType.valueOf(parts[3]);
         String statusesPart = parts[4];
-
+        boolean eventWasBooked = "BOOKED".equalsIgnoreCase(outcome);
         supportLog.add(
                 "Received history update for proposal " + proposalId
                         + ", activity " + activityId
@@ -401,10 +419,19 @@ public class SocialSupportAgent extends Agent {
 
         if (statusesPart == null || statusesPart.isBlank() || statusesPart.equals("-")) {
             supportLog.add("No resident statuses to record for proposal " + proposalId);
+            FrontendLogStore.info(
+                    getLocalName(),
+                    "PARTICIPATION_HISTORY_EMPTY",
+                    "No resident statuses to record for proposal " + proposalId,
+                    Map.of(
+                            "proposalId", proposalId,
+                            "outcome", outcome,
+                            "eventWasBooked", eventWasBooked
+                    )
+            );
+
             return;
         }
-
-        boolean eventWasBooked = "BOOKED".equals(outcome);
 
         String[] residentStatuses = statusesPart.split(",");
 
@@ -418,31 +445,89 @@ public class SocialSupportAgent extends Agent {
             String residentId = statusParts[0].trim();
             ParticipationStatus status = ParticipationStatus.valueOf(statusParts[1].trim());
 
-            recordFinalParticipationStatus(residentId, status, eventWasBooked);
+            recordFinalParticipationStatus(
+                    proposalId,
+                    activityId,
+                    activityType,
+                    residentId,
+                    status,
+                    eventWasBooked
+            );
+
         }
     }
     private void recordFinalParticipationStatus(
+            String proposalId,
+            String activityId,
+            ActivityType activityType,
             String residentId,
             ParticipationStatus status,
             boolean eventWasBooked
     ) {
-        if (residentId == null || status == null) {
+        if (residentId == null || residentId.isBlank() || status == null) {
             return;
         }
 
         if (status == ParticipationStatus.CONFIRMED && eventWasBooked) {
             int currentCount = participationCounts.getOrDefault(residentId, 0);
             participationCounts.put(residentId, currentCount + 1);
+
+            FrontendLogStore.info(
+                    getLocalName(),
+                    "RESIDENT_FINAL_ACCEPTED_RECORDED",
+                    "Resident " + residentId + " was recorded as accepted for booked proposal " + proposalId,
+                    Map.of(
+                            "proposalId", proposalId,
+                            "activityId", activityId,
+                            "activityType", activityType.toString(),
+                            "residentId", residentId,
+                            "status", status.toString(),
+                            "eventWasBooked", true,
+                            "participationCount", participationCounts.get(residentId)
+                    )
+            );
+        }
+
+        if (status == ParticipationStatus.CONFIRMED && !eventWasBooked) {
+            FrontendLogStore.info(
+                    getLocalName(),
+                    "RESIDENT_ACCEPTED_BUT_EVENT_NOT_BOOKED",
+                    "Resident " + residentId + " accepted proposal " + proposalId + ", but the event was not booked",
+                    Map.of(
+                            "proposalId", proposalId,
+                            "activityId", activityId,
+                            "activityType", activityType.toString(),
+                            "residentId", residentId,
+                            "status", status.toString(),
+                            "eventWasBooked", false
+                    )
+            );
         }
 
         if (status == ParticipationStatus.DECLINED) {
             int currentCount = declinedCounts.getOrDefault(residentId, 0);
             declinedCounts.put(residentId, currentCount + 1);
+
+            FrontendLogStore.info(
+                    getLocalName(),
+                    "RESIDENT_FINAL_DECLINED_RECORDED",
+                    "Resident " + residentId + " was recorded as declined for proposal " + proposalId,
+                    Map.of(
+                            "proposalId", proposalId,
+                            "activityId", activityId,
+                            "activityType", activityType.toString(),
+                            "residentId", residentId,
+                            "status", status.toString(),
+                            "eventWasBooked", eventWasBooked,
+                            "declinedCount", declinedCounts.get(residentId)
+                    )
+            );
         }
 
         supportLog.add(
                 "Recorded final status " + status
                         + " for resident " + residentId
+                        + ", proposal=" + proposalId
                         + ", eventWasBooked=" + eventWasBooked
         );
     }
@@ -464,6 +549,91 @@ public class SocialSupportAgent extends Agent {
             );
         }
     }
+    private void addFrontendLogEventReceiver() {
+        addBehaviour(new CyclicBehaviour() {
+            @Override
+            public void action() {
+                MessageTemplate template = MessageTemplate.and(
+                        MessageTemplate.MatchConversationId(AgentLogSender.FRONTEND_LOG_CONVERSATION),
+                        MessageTemplate.MatchPerformative(ACLMessage.INFORM)
+                );
+
+                ACLMessage message = myAgent.receive(template);
+
+                if (message == null) {
+                    block();
+                    return;
+                }
+
+                handleFrontendLogEvent(message);
+            }
+        });
+    }
+    private void handleFrontendLogEvent(ACLMessage message) {
+        try {
+            Map<String, Object> payload = logMapper.readValue(
+                    message.getContent(),
+                    new TypeReference<Map<String, Object>>() {}
+            );
+
+            String level = readString(payload, "level", "INFO");
+            String source = readString(payload, "source", message.getSender().getLocalName());
+            String action = readString(payload, "action", "AGENT_EVENT");
+            String logMessage = readString(payload, "message", "");
+            Map<String, Object> details = readMap(payload.get("details"));
+
+            FrontendLogStore.log(
+                    level,
+                    source,
+                    action,
+                    logMessage,
+                    details
+            );
+
+        } catch (Exception exception) {
+            FrontendLogStore.error(
+                    getLocalName(),
+                    "FRONTEND_LOG_EVENT_FAILED",
+                    "SocialSupportAgent failed to process frontend log event",
+                    exception
+            );
+        }
+    }
+    private String readString(Map<String, Object> payload, String key, String defaultValue) {
+        Object value = payload.get(key);
+
+        if (value == null) {
+            return defaultValue;
+        }
+
+        String stringValue = value.toString();
+
+        if (stringValue.isBlank()) {
+            return defaultValue;
+        }
+
+        return stringValue;
+    }
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> readMap(Object value) {
+        if (value instanceof Map<?, ?> mapValue) {
+            Map<String, Object> result = new HashMap<>();
+
+            for (Map.Entry<?, ?> entry : mapValue.entrySet()) {
+                if (entry.getKey() != null) {
+                    result.put(entry.getKey().toString(), entry.getValue());
+                }
+            }
+
+            return result;
+        }
+
+        return Map.of();
+    }
+
+
+
+
 
 
 
