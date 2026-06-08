@@ -123,10 +123,14 @@ def post_to_main_app(activity_message: ActivityProposalMessage)->Dict[str,Any]:
             "body": response.text,
         }
 @app.post("/generate-only", response_model=ActivityProposalMessage)
-def generate_only(req: GenerateActivityRequest) -> ActivityProposalMessage:
+def generate_only(req: GenerateActivityRequest | None = None) -> ActivityProposalMessage:
+    if req is None:
+        req = GenerateActivityRequest()
     return generate_activity(req)
 @app.post("/generate-and-post")
-def generate_and_post(req:GenerateActivityRequest) ->Dict[str,Any]:
+def generate_and_post(req: GenerateActivityRequest | None = None) -> Dict[str, Any]:
+    if req is None:
+        req = GenerateActivityRequest()
     activity_message = generate_activity(req)
     main_app_response = post_to_main_app(activity_message)
     return {
