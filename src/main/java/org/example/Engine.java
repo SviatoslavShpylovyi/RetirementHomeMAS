@@ -74,19 +74,19 @@ public class Engine {
             );
 
             AgentController annaAgent = container.createNewAgent(
-                    "resident-anna",
+                    anna.getId(),
                     "org.example.agents.ResidentAgent",
                     new Object[]{anna}
             );
 
             AgentController janAgent = container.createNewAgent(
-                    "resident-jan",
+                    jan.getId(),
                     "org.example.agents.ResidentAgent",
                     new Object[]{jan}
             );
 
             AgentController mariaAgent = container.createNewAgent(
-                    "resident-maria",
+                    maria.getId(),
                     "org.example.agents.ResidentAgent",
                     new Object[]{maria}
             );
@@ -112,7 +112,7 @@ public class Engine {
             AgentController socialSupportAgent = container.createNewAgent(
                     "social-support-agent",
                     "org.example.agents.SocialSupportAgent",
-                    null
+                    new Object[]{List.of(anna, jan, maria)}
             );
 
             AgentController scenarioAgent = container.createNewAgent(
@@ -131,7 +131,7 @@ public class Engine {
                     "org.example.agents.ApiGatewayAgent",
                     new Object[]{8080}
             );
-
+            socialSupportAgent.start();
             annaAgent.start();
             janAgent.start();
             mariaAgent.start();
@@ -139,7 +139,7 @@ public class Engine {
             activityAgent.start();
             resourceAgent.start();
             healthAgent.start();
-            socialSupportAgent.start();
+
             apiGatewayAgent.start();
             scenarioAgent.start();
             facilitatorAgent.start();

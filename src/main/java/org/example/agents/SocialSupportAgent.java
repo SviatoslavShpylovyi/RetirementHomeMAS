@@ -1,22 +1,35 @@
 package org.example.agents;
 
 import jade.core.Agent;
-import jade.core.behaviours.OneShotBehaviour;
 import org.example.model.Activity;
 import org.example.model.EventProposal;
 import org.example.model.ParticipationStatus;
 import org.example.model.Resident;
+import org.example.logging.AgentLogSender;
+import org.example.logging.FrontendLogStore;
 
+import jade.core.behaviours.CyclicBehaviour;
+import jade.lang.acl.ACLMessage;
+import jade.lang.acl.MessageTemplate;
+import org.example.model.ActivityType;
+import org.example.model.MobilityLevel;
+import java.util.stream.Collectors;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 public class SocialSupportAgent extends Agent {
 
     private Map<String, Integer> participationCounts;
     private Map<String, Integer> declinedCounts;
     private List<String> supportLog;
+    private List<Resident> knownResidents;
+    private final ObjectMapper logMapper = new ObjectMapper();
+    private static final String SCENARIO_SOCIAL_SUGGESTIONS_CONVERSATION = "scenario-social-suggestions";
+    private static final String PARTICIPATION_HISTORY_CONVERSATION = "participation-history-update";
 
     @Override
     protected void setup() {
@@ -25,12 +38,32 @@ public class SocialSupportAgent extends Agent {
         participationCounts = new HashMap<>();
         declinedCounts = new HashMap<>();
         supportLog = new ArrayList<>();
+        knownResidents = new ArrayList<>();
 
-        addBehaviour(new OneShotBehaviour() {
-            @Override
-            public void action() {
+        Object[] args = getArguments();
+
+        if (args != null && args.length > 0 && args[0] instanceof List<?>) {
+            for (Object item : (List<?>) args[0]) {
+                if (item instanceof Resident) {
+                    knownResidents.add((Resident) item);
+                }
             }
-        });
+        }
+
+        System.out.println(getLocalName() + " knows residents:");
+        for (Resident resident : knownResidents) {
+            System.out.println(" - " + resident);
+        }
+
+        addScenarioSuggestionRequestReceiver();
+        addParticipationHistoryUpdateReceiver();
+        addFrontendLogEventReceiver();
+        FrontendLogStore.info(
+                getLocalName(),
+                "AGENT_STARTED",
+                "SocialSupportAgent started and is ready to receive frontend log events"
+        );
+
     }
 
     public boolean isActivityMatchingPreferences(Resident resident, Activity activity) {
@@ -218,6 +251,396 @@ public class SocialSupportAgent extends Agent {
                         + resident.getName()
         );
     }
+    // communication with ScenarioAgent
+    private void addScenarioSuggestionRequestReceiver() {
+        addBehaviour(new CyclicBehaviour() {
+            @Override
+            public void action() {
+                MessageTemplate template = MessageTemplate.and(
+                        MessageTemplate.MatchConversationId(SCENARIO_SOCIAL_SUGGESTIONS_CONVERSATION),
+                        MessageTemplate.MatchPerformative(ACLMessage.REQUEST)
+                );
+
+                ACLMessage message = myAgent.receive(template);
+
+                if (message == null) {
+                    block();
+                    return;
+                }
+
+                handleScenarioSuggestionRequest(message);
+            }
+        });
+    }
+    private void handleScenarioSuggestionRequest(ACLMessage message) {
+        String content = message.getContent();
+
+        System.out.println(
+                getLocalName() + " <- " + message.getSender().getLocalName()
+                        + ": suggestion request: " + content
+        );
+
+        String replyContent;
+
+        try {
+            EventProposal proposal = parseProposalRequest(content);
+
+            suggestResidentsForProposal(proposal, knownResidents);
+
+            replyContent = buildSuggestedResidentsResponse(proposal);
+
+        } catch (Exception ex) {
+            System.err.println(getLocalName() + " failed to process suggestion request:");
+            ex.printStackTrace();
+
+            replyContent = "UNKNOWN|-";
+        }
+
+        ACLMessage reply = message.createReply();
+        reply.setPerformative(ACLMessage.INFORM);
+        reply.setConversationId(SCENARIO_SOCIAL_SUGGESTIONS_CONVERSATION);
+        reply.setContent(replyContent);
+
+        send(reply);
+
+        System.out.println(
+                getLocalName() + " -> " + message.getSender().getLocalName()
+                        + ": suggested residents: " + replyContent
+        );
+    }
+    private EventProposal parseProposalRequest(String content) {
+        String[] parts = content.split("\\|");
+
+        if (parts.length < 6) {
+            throw new IllegalArgumentException(
+                    "Wrong social suggestion request format. Expected: proposalId|activityId|activityName|activityType|maxParticipants|requiredMobilityLevel"
+            );
+        }
+
+        String proposalId = parts[0];
+
+        Activity activity = new Activity(
+                parts[1],
+                parts[2],
+                ActivityType.valueOf(parts[3]),
+                Integer.parseInt(parts[4]),
+                MobilityLevel.valueOf(parts[5])
+        );
+
+        return new EventProposal(
+                proposalId,
+                null,
+                activity,
+                null
+        );
+    }
+    private String buildSuggestedResidentsResponse(EventProposal proposal) {
+        if (proposal.getParticipantStatuses().isEmpty()) {
+            return proposal.getId() + "|-";
+        }
+
+        String residentIds = proposal.getParticipantStatuses()
+                .keySet()
+                .stream()
+                .collect(Collectors.joining(","));
+
+        return proposal.getId() + "|" + residentIds;
+    }
+
+    // communication with ActivityAgent: participation history update
+    private void addParticipationHistoryUpdateReceiver() {
+        addBehaviour(new CyclicBehaviour() {
+            @Override
+            public void action() {
+                MessageTemplate template = MessageTemplate.and(
+                        MessageTemplate.MatchConversationId(PARTICIPATION_HISTORY_CONVERSATION),
+                        MessageTemplate.MatchPerformative(ACLMessage.INFORM)
+                );
+
+                ACLMessage message = myAgent.receive(template);
+
+                if (message == null) {
+                    block();
+                    return;
+                }
+
+                handleParticipationHistoryUpdate(message);
+            }
+        });
+    }
+    private void handleParticipationHistoryUpdate(ACLMessage message) {
+        String content = message.getContent();
+
+        System.out.println(
+                getLocalName() + " <- " + message.getSender().getLocalName()
+                        + ": participation history update: " + content
+        );
+
+        try {
+            applyParticipationHistoryUpdate(content);
+            printParticipationHistory();
+        } catch (Exception ex) {
+            System.err.println(getLocalName() + " failed to process participation history update:");
+            ex.printStackTrace();
+            FrontendLogStore.error(
+                    getLocalName(),
+                    "PARTICIPATION_HISTORY_UPDATE_FAILED",
+                    "SocialSupportAgent failed to process participation history update",
+                    ex
+            );
+
+        }
+    }
+    private void applyParticipationHistoryUpdate(String content) {
+        if (content == null || content.isBlank()) {
+            return;
+        }
+
+        String[] parts = content.split("\\|", -1);
+
+        if (parts.length < 5) {
+            throw new IllegalArgumentException(
+                    "Wrong participation history format. Expected: proposalId|outcome|activityId|activityType|residentId:status,..."
+            );
+        }
+
+        String proposalId = parts[0];
+        String outcome = parts[1];
+        String activityId = parts[2];
+        ActivityType activityType = ActivityType.valueOf(parts[3]);
+        String statusesPart = parts[4];
+        boolean eventWasBooked = "BOOKED".equalsIgnoreCase(outcome);
+        supportLog.add(
+                "Received history update for proposal " + proposalId
+                        + ", activity " + activityId
+                        + " (" + activityType + ")"
+                        + ", outcome " + outcome
+        );
+
+        if (statusesPart == null || statusesPart.isBlank() || statusesPart.equals("-")) {
+            supportLog.add("No resident statuses to record for proposal " + proposalId);
+            FrontendLogStore.info(
+                    getLocalName(),
+                    "PARTICIPATION_HISTORY_EMPTY",
+                    "No resident statuses to record for proposal " + proposalId,
+                    Map.of(
+                            "proposalId", proposalId,
+                            "outcome", outcome,
+                            "eventWasBooked", eventWasBooked
+                    )
+            );
+
+            return;
+        }
+
+        String[] residentStatuses = statusesPart.split(",");
+
+        for (String residentStatus : residentStatuses) {
+            String[] statusParts = residentStatus.split(":");
+
+            if (statusParts.length != 2) {
+                continue;
+            }
+
+            String residentId = statusParts[0].trim();
+            ParticipationStatus status = ParticipationStatus.valueOf(statusParts[1].trim());
+
+            recordFinalParticipationStatus(
+                    proposalId,
+                    activityId,
+                    activityType,
+                    residentId,
+                    status,
+                    eventWasBooked
+            );
+
+        }
+    }
+    private void recordFinalParticipationStatus(
+            String proposalId,
+            String activityId,
+            ActivityType activityType,
+            String residentId,
+            ParticipationStatus status,
+            boolean eventWasBooked
+    ) {
+        if (residentId == null || residentId.isBlank() || status == null) {
+            return;
+        }
+
+        if (status == ParticipationStatus.CONFIRMED && eventWasBooked) {
+            int currentCount = participationCounts.getOrDefault(residentId, 0);
+            participationCounts.put(residentId, currentCount + 1);
+
+            FrontendLogStore.info(
+                    getLocalName(),
+                    "RESIDENT_FINAL_ACCEPTED_RECORDED",
+                    "Resident " + residentId + " was recorded as accepted for booked proposal " + proposalId,
+                    Map.of(
+                            "proposalId", proposalId,
+                            "activityId", activityId,
+                            "activityType", activityType.toString(),
+                            "residentId", residentId,
+                            "status", status.toString(),
+                            "eventWasBooked", true,
+                            "participationCount", participationCounts.get(residentId)
+                    )
+            );
+        }
+
+        if (status == ParticipationStatus.CONFIRMED && !eventWasBooked) {
+            FrontendLogStore.info(
+                    getLocalName(),
+                    "RESIDENT_ACCEPTED_BUT_EVENT_NOT_BOOKED",
+                    "Resident " + residentId + " accepted proposal " + proposalId + ", but the event was not booked",
+                    Map.of(
+                            "proposalId", proposalId,
+                            "activityId", activityId,
+                            "activityType", activityType.toString(),
+                            "residentId", residentId,
+                            "status", status.toString(),
+                            "eventWasBooked", false
+                    )
+            );
+        }
+
+        if (status == ParticipationStatus.DECLINED) {
+            int currentCount = declinedCounts.getOrDefault(residentId, 0);
+            declinedCounts.put(residentId, currentCount + 1);
+
+            FrontendLogStore.info(
+                    getLocalName(),
+                    "RESIDENT_FINAL_DECLINED_RECORDED",
+                    "Resident " + residentId + " was recorded as declined for proposal " + proposalId,
+                    Map.of(
+                            "proposalId", proposalId,
+                            "activityId", activityId,
+                            "activityType", activityType.toString(),
+                            "residentId", residentId,
+                            "status", status.toString(),
+                            "eventWasBooked", eventWasBooked,
+                            "declinedCount", declinedCounts.get(residentId)
+                    )
+            );
+        }
+
+        supportLog.add(
+                "Recorded final status " + status
+                        + " for resident " + residentId
+                        + ", proposal=" + proposalId
+                        + ", eventWasBooked=" + eventWasBooked
+        );
+    }
+    private void printParticipationHistory() {
+        System.out.println("\nParticipation history known by " + getLocalName() + ":");
+
+        if (participationCounts.isEmpty() && declinedCounts.isEmpty()) {
+            System.out.println(" - No participation history yet.");
+            return;
+        }
+
+        for (Resident resident : knownResidents) {
+            String residentId = resident.getId();
+
+            System.out.println(
+                    " - " + residentId
+                            + " confirmed=" + getParticipationCount(residentId)
+                            + ", declined=" + getDeclinedCount(residentId)
+            );
+        }
+    }
+    private void addFrontendLogEventReceiver() {
+        addBehaviour(new CyclicBehaviour() {
+            @Override
+            public void action() {
+                MessageTemplate template = MessageTemplate.and(
+                        MessageTemplate.MatchConversationId(AgentLogSender.FRONTEND_LOG_CONVERSATION),
+                        MessageTemplate.MatchPerformative(ACLMessage.INFORM)
+                );
+
+                ACLMessage message = myAgent.receive(template);
+
+                if (message == null) {
+                    block();
+                    return;
+                }
+
+                handleFrontendLogEvent(message);
+            }
+        });
+    }
+    private void handleFrontendLogEvent(ACLMessage message) {
+        try {
+            Map<String, Object> payload = logMapper.readValue(
+                    message.getContent(),
+                    new TypeReference<Map<String, Object>>() {}
+            );
+
+            String level = readString(payload, "level", "INFO");
+            String source = readString(payload, "source", message.getSender().getLocalName());
+            String action = readString(payload, "action", "AGENT_EVENT");
+            String logMessage = readString(payload, "message", "");
+            Map<String, Object> details = readMap(payload.get("details"));
+
+            FrontendLogStore.log(
+                    level,
+                    source,
+                    action,
+                    logMessage,
+                    details
+            );
+
+        } catch (Exception exception) {
+            FrontendLogStore.error(
+                    getLocalName(),
+                    "FRONTEND_LOG_EVENT_FAILED",
+                    "SocialSupportAgent failed to process frontend log event",
+                    exception
+            );
+        }
+    }
+    private String readString(Map<String, Object> payload, String key, String defaultValue) {
+        Object value = payload.get(key);
+
+        if (value == null) {
+            return defaultValue;
+        }
+
+        String stringValue = value.toString();
+
+        if (stringValue.isBlank()) {
+            return defaultValue;
+        }
+
+        return stringValue;
+    }
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> readMap(Object value) {
+        if (value instanceof Map<?, ?> mapValue) {
+            Map<String, Object> result = new HashMap<>();
+
+            for (Map.Entry<?, ?> entry : mapValue.entrySet()) {
+                if (entry.getKey() != null) {
+                    result.put(entry.getKey().toString(), entry.getValue());
+                }
+            }
+
+            return result;
+        }
+
+        return Map.of();
+    }
+
+
+
+
+
+
+
+
+
+
+
 
 
 }
