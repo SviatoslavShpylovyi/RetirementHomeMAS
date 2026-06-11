@@ -64,15 +64,9 @@ public class ActivityAgent extends Agent {
             @Override
             public void action() {
                 initializeActivities();
-                initializeSampleEventProposals();
 
                 printActivities();
                 printEventProposals();
-
-                for(EventProposal proposal : eventProposals)
-                {
-                    askHealthAgentToCheckProposal(proposal);
-                }
 
             }
         });
