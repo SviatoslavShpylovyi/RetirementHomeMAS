@@ -521,7 +521,7 @@ public class ApiGatewayAgent extends Agent {
                 jsonObject("label", "number of events accepted", "value", String.valueOf(acceptedEvents)),
                 jsonObject("label", "number of proposed events", "value", String.valueOf(proposedEvents)),
                 jsonObject("label", "average number of attended events per resident",
-                        "value", String.format(Locale.US, "%.1f", averageAttendance))
+                        "value", String.format(Locale.US, "%.2f", averageAttendance))
         );
     }
 

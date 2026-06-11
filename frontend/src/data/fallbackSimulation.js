@@ -2,7 +2,7 @@ export const fallbackSimulation = {
   kpis: [
     { label: "number of events accepted", value: "1" },
     { label: "number of proposed events", value: "2" },
-    { label: "average number of attended events per resident", value: "0.4" }
+    { label: "average number of attended events per resident", value: "0.40" }
   ],
   scenario: {
     id: "E1",
